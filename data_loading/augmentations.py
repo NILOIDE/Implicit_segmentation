@@ -76,26 +76,26 @@ class RotateCoords(AbstractAug):
             assert isinstance(z_lim, float)
             self.num_parameters += 1
 
-    def gen_rot_matrix(self, thetas: List[float]) -> torch.tensor:
-        radians = torch.tensor(thetas) * 2 * np.pi
-        R_x = torch.tensor([[1, 0, 0],
-                            [0, math.cos(radians[0]), -math.sin(radians[0])],
-                            [0, math.sin(radians[0]), math.cos(radians[0])],
-                            ])
-        R_y = torch.tensor([[math.cos(radians[1]), 0, math.sin(radians[1])],
-                            [0, 1, 0],
-                            [-math.sin(radians[1]), 0, math.cos(radians[1])],
-                            ])
-        R_z = torch.tensor([[math.cos(radians[2]), -math.sin(radians[2]), 0],
-                            [math.sin(radians[0]), math.cos(radians[0]), 0],
-                            [0, 0, 1]
-                            ])
-        return torch.mm(R_z, torch.mm(R_y, R_x))
+    def gen_rot_matrix(self, thetas: List[float]) -> np.ndarray:
+        radians = np.array(thetas) * 2 * np.pi
+        R_x = np.array([[1, 0, 0],
+                        [0, math.cos(radians[0]), -math.sin(radians[0])],
+                        [0, math.sin(radians[0]), math.cos(radians[0])],
+                        ])
+        R_y = np.array([[math.cos(radians[1]), 0, math.sin(radians[1])],
+                        [0, 1, 0],
+                        [-math.sin(radians[1]), 0, math.cos(radians[1])],
+                        ])
+        R_z = np.array([[math.cos(radians[2]), -math.sin(radians[2]), 0],
+                        [math.sin(radians[0]), math.cos(radians[0]), 0],
+                        [0, 0, 1]
+                        ])
+        return np.dot(R_z, np.dot(R_y, R_x))
 
     def __call__(self, data: Dict[str, np.ndarray]):
         # TODO: Now only works for 3d coords
         coords = data["coords"]
-        coords_ = coords.view(-1, 3)
+        coords_ = coords.reshape(-1, 3)
         theta_1, theta_2, theta_3 = None, None, None
         return_params = []
         if self.x_lim is not None:
@@ -111,7 +111,7 @@ class RotateCoords(AbstractAug):
                                  theta_2 if theta_2 is not None else 0,
                                  theta_3 if theta_3 is not None else 0,
                                  ])
-        data["coords"] = torch.mm(coords_, R).reshape(coords.shape)
+        data["coords"] = np.dot(coords_, R).reshape(coords.shape)
         return return_params
 
 

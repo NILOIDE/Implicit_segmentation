@@ -17,11 +17,14 @@ UKBB_TEST_IMGS_DIR = Path(r"C:\Users\nilst\Documents\Implicit_segmentation\data\
 
 
 class SAX3D(Dataset):
-    def __init__(self, load_dir=UKBB_IMGS_DIR, side_length=(128, 128, None), **kwargs):
+    def __init__(self, load_dir=UKBB_IMGS_DIR, side_length=(128, 128, -1), heart_pad=5, **kwargs):
         self.load_dir = load_dir
-        self.shape = list(side_length)
+        self.heart_pad = heart_pad
+        self.max_shape = np.full((len(side_length)), -1, dtype=int)
         self.im_paths, self.seg_paths, self.bboxes = self.find_sax_images()
-        self.augs = [GammaShift(gamma_lim=(0.6, 1.7))]
+        # If a side_length value was left as -1 by the user, use the max shape of that dimension instead
+        self.out_shape = np.array([side_length[0], side_length[1], self.max_shape[2]])
+        self.augs = []#[TranslateCoords(x_lim=0.1, y_lim=0.1), GammaShift((0.7, 1.4))]
         self.num_aug_params = sum([a.num_parameters for a in self.augs])
         self.do_augment = True
 
@@ -40,8 +43,12 @@ class SAX3D(Dataset):
                     segs.append(seg_path)
                     bbox = (arg.min(0), arg.max(0))
                     bboxes.append(bbox)
-                    if self.shape[2] is None or bbox[1][2]+1 - bbox[0][2] > self.shape[2]:
-                        self.shape[2] = bbox[1][2]+1 - bbox[0][2]
+                    if self.max_shape[0] < 0 or bbox[1][0] + 1 - bbox[0][0] > self.max_shape[0]:
+                        self.max_shape[0] = bbox[1][0] + 1 - bbox[0][0]
+                    if self.max_shape[1] < 0 or bbox[1][1] + 1 - bbox[0][1] > self.max_shape[1]:
+                        self.max_shape[1] = bbox[1][1] + 1 - bbox[0][1]
+                    if self.max_shape[2] < 0 or bbox[1][2] + 1 - bbox[0][2] > self.max_shape[2]:
+                        self.max_shape[2] = bbox[1][2] + 1 - bbox[0][2]
         return ims, segs, bboxes
 
     def visualize(self):
@@ -57,8 +64,8 @@ class SAX3D(Dataset):
                     bbox = (arg.min(0), arg.max(0))
                     im = nib.load(im_path).get_data()
                     im = im[bbox[0][0]: bbox[1][0],
-                         bbox[0][1]: bbox[1][1],
-                         bbox[0][2]: bbox[1][2]]
+                            bbox[0][1]: bbox[1][1],
+                            bbox[0][2]: bbox[1][2]]
                     im = (im - im.min()) / (im.max() - im.min())
                     im = cv2.resize(im, (sh, sh))
                     zer = np.zeros((sh, sh * 12))
@@ -70,55 +77,72 @@ class SAX3D(Dataset):
         return len(self.im_paths)
 
     def __getitem__(self, idx):
+        # Load image data
         nii_img = nib.load(self.im_paths[idx])
         raw_data = nii_img.get_data()
+        # Extract section of image based on precomputed bounding box
         bbox_min, bbox_max = self.bboxes[idx]
-        sub_vol = raw_data[bbox_min[0]: bbox_max[0],
-                           bbox_min[1]: bbox_max[1],
+        pad = self.heart_pad
+        sub_vol = raw_data[bbox_min[0]-pad: bbox_max[0]+pad,
+                           bbox_min[1]-pad: bbox_max[1]+pad,
                            bbox_min[2]: bbox_max[2]]
         min_, max_ = sub_vol.min(), sub_vol.max()
         sub_vol = (sub_vol - min_) / (max_ - min_)
-        img = cv2.resize(sub_vol, self.shape[:2])
-        img = torch.from_numpy(img)
-        x, y, z = torch.meshgrid(torch.arange(img.shape[0], dtype=torch.float32),
-                                 torch.arange(img.shape[1], dtype=torch.float32),
-                                 torch.arange(img.shape[2], dtype=torch.float32))
+        img = cv2.resize(sub_vol, self.out_shape[:2])
+
+        x, y, z = np.meshgrid(np.arange(img.shape[0], dtype=float),
+                              np.arange(img.shape[1], dtype=float),
+                              np.arange(img.shape[2], dtype=float))
         x = x / img.shape[0] - .5
         y = y / img.shape[1] - .5
         z = z / img.shape[2] - .5
         coords = torch.stack((x, y, z), dim=-1)
-        return coords, img, idx
+
+        aug_params = []
+        if self.do_augment:
+            data = {"coords": coords, "image": img}
+            for aug in self.augs:
+                aug_params.extend(aug(data))
+            coords, img, seg = data["coords"], data["image"], data["seg"]
+        aug_params = torch.tensor(aug_params)
+
+        coords = torch.from_numpy(coords).to(torch.float32)
+        img = torch.from_numpy(img).to(torch.float32)
+        return coords, img, idx, aug_params
 
 
 class SAX3D_Seg(SAX3D):
 
     def __getitem__(self, idx):
+        # Load image and seg data
         nii_img = nib.load(self.im_paths[idx])
-        im_data = nii_img.get_data()
+        raw_im_data = nii_img.get_data()
         nii_seg = nib.load(self.seg_paths[idx])
-        seg_data = nii_seg.get_data()
-        bbox_min, bbox_max = self.bboxes[idx]
+        raw_seg_data = nii_seg.get_data()
 
-        sub_im = im_data[bbox_min[0]: bbox_max[0],
-                         bbox_min[1]: bbox_max[1],
-                         bbox_min[2]: bbox_max[2]]
+        bbox_min, bbox_max = self.bboxes[idx]
+        bbox_min = (bbox_min - self.heart_pad).clip(min=0)
+        bbox_max = (bbox_max + self.heart_pad).clip(max=np.array(raw_im_data.shape))
+
+        sub_im = raw_im_data[bbox_min[0]: bbox_max[0],
+                             bbox_min[1]: bbox_max[1],
+                             bbox_min[2]: bbox_max[2]]
         min_, max_ = sub_im.min(), sub_im.max()
         sub_im = (sub_im - min_) / (max_ - min_)
-        img = cv2.resize(sub_im, self.shape[:2])
-        img = torch.from_numpy(img)
+        img = cv2.resize(sub_im, self.out_shape[:2])
 
-        sub_seg = seg_data[bbox_min[0]: bbox_max[0],
-                           bbox_min[1]: bbox_max[1],
-                           bbox_min[2]: bbox_max[2]]
-        seg = cv2.resize(sub_seg, self.shape[:2], interpolation=cv2.INTER_NEAREST)
+        sub_seg = raw_seg_data[bbox_min[0]: bbox_max[0],
+                               bbox_min[1]: bbox_max[1],
+                               bbox_min[2]: bbox_max[2]]
+        seg = cv2.resize(sub_seg, self.out_shape[:2], interpolation=cv2.INTER_NEAREST)
 
-        x, y, z = torch.meshgrid(torch.arange(img.shape[0], dtype=torch.float32),
-                                 torch.arange(img.shape[1], dtype=torch.float32),
-                                 torch.arange(img.shape[2], dtype=torch.float32))
+        x, y, z = np.meshgrid(np.arange(img.shape[0], dtype=float),
+                              np.arange(img.shape[1], dtype=float),
+                              np.arange(img.shape[2], dtype=float))
         x = x / img.shape[0] - .5
         y = y / img.shape[1] - .5
         z = z / img.shape[2] - .5
-        coords = torch.stack((x, y, z), dim=-1)
+        coords = np.stack((x, y, z), axis=-1)
 
         aug_params = []
         if self.do_augment:
@@ -128,6 +152,9 @@ class SAX3D_Seg(SAX3D):
             coords, img, seg = data["coords"], data["image"], data["seg"]
         aug_params = torch.tensor(aug_params)
 
+        coords = torch.from_numpy(coords).to(torch.float32)
+        img = torch.from_numpy(img).to(torch.float32)
+        seg = torch.from_numpy(seg)
         return coords, img, idx, seg, aug_params
 
 
@@ -181,56 +208,6 @@ class SAX3D_Seg_test(SAX3D_Seg):
 
         self.image = self.__getitem__(0)[1]
         self.do_augment = False
-
-
-class SAX3DCropped(Dataset):
-
-    def __init__(self):
-        self.max_shape = [0, 0, 0]
-        self.im_paths = self.find_sax_images()
-
-    def find_sax_images(self):
-        ims = []
-        for parent, subdir, files in os.walk(str(UKBB_IMGS_DIR)):
-            for file in files:
-                if file == "sa_ED.nii.gz":
-                    path = Path(parent) / file
-                    ims.append(path)
-                    shape = nib.load(path).get_fdata().shape
-                    if shape[0] > self.max_shape[0]:
-                        self.max_shape[0] = shape[0]
-                    if shape[1] > self.max_shape[1]:
-                        self.max_shape[1] = shape[1]
-                    if shape[2] > self.max_shape[2]:
-                        self.max_shape[2] = shape[2]
-        return ims
-
-    def __len__(self):
-        return len(self.im_paths)
-
-    def __getitem__(self, idx):
-
-        nii_img = nib.load(self.im_paths[idx])
-        img = nii_img.get_data()
-        canvas = np.zeros(self.max_shape, dtype=np.float32)
-        offset = (np.array(canvas.shape) - np.array(img.shape)) // 2
-        canvas[offset[0]:offset[0]+img.shape[0], offset[1]:offset[1]+img.shape[1], offset[2]:offset[2]+img.shape[2]] = img
-        min_, max_ = canvas.min(), canvas.max()
-        canvas = (canvas - min_) / (max_ - min_)
-        # z = random.sample(range(0, canvas.shape[2]), 1)[0]
-
-        img = canvas
-
-        x, y, z = torch.meshgrid(torch.arange(img.shape[0], dtype=torch.float32),
-                                 torch.arange(img.shape[1], dtype=torch.float32),
-                                 torch.arange(img.shape[2], dtype=torch.float32),)
-        # z = torch.full_like(x, z)
-
-        x = x / img.shape[0]
-        y = y / img.shape[1]
-        z = z / canvas.shape[2]
-        coords = torch.stack((x, y, z), dim=-1)
-        return coords, img, idx
 
 
 MNIST_IMGS_DIR = Path(r"/data/MNIST")

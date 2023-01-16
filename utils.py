@@ -32,7 +32,7 @@ def to_1hot(class_indices: torch.Tensor, num_class=4) -> torch.FloatTensor:
     seg = class_indices.to(torch.long).reshape((-1))
     seg_1hot = torch.zeros((*seg.shape, num_class), dtype=torch.float32, device=class_indices.device)
     seg_1hot[torch.arange(0, seg.shape[0], dtype=torch.long), seg] = 1
-    seg_1hot = seg_1hot.reshape((*class_indices.shape, num_class))
+    seg_1hot = seg_1hot.reshape((*class_indices.shape, num_class)).moveaxis(-1, 1)
     return seg_1hot
 
 

@@ -8,6 +8,7 @@ from typing import Tuple, Any, Dict, Optional
 import numpy as np
 import pytorch_lightning as pl
 from monai.losses import DiceLoss
+from scipy.ndimage.morphology import distance_transform_edt
 
 import logging
 # Prevent unnecessary warning prints
@@ -71,6 +72,7 @@ class AbstractPrior(pl.LightningModule):
         self.num_train_samples = num_train_samples
         self.h = nn.Parameter(torch.normal(0., 0.1**2, (self.num_train_samples, self.latent_size - aug_num_parameters,)), requires_grad=True)
 
+        self.initial_val = kwargs.get("initial_val", False)
         self.val_epochs = kwargs.get("val_max_epochs")
         self.val_interval = kwargs.get("val_interval")
         self.params = kwargs
@@ -79,16 +81,21 @@ class AbstractPrior(pl.LightningModule):
         self.bce_loss = None
 
     @abc.abstractmethod
-    def val_dataset(self):
+    def val_dataset(self) -> torch.utils.data.Dataset:
         pass
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.lr)
 
-    def reconstruction_criterion(self, pred_im, gt_im, log=True):
-        loss = self.mse_loss(pred_im, gt_im).mean()
+    def reconstruction_criterion(self, pred_im, gt_im, gt_background=None, log=True):
+        loss = self.mse_loss(pred_im, gt_im)
+        if gt_background is not None:
+            dist_map = distance_transform_edt((gt_background).cpu().numpy())
+            dist_map = torch.tensor(dist_map, dtype=torch.float32, device=pred_im.device) / dist_map.max()
+            loss = loss * (1 - dist_map)
+        loss = loss.mean()
         if log:
-            self.log(f"{self.split_name}/pixel_L2", loss.item())
+            self.log(f"{self.split_name}/pixel_L2", loss.item(), prog_bar=True)
         return loss
 
     def regularization_criterion(self, h, log=True):
@@ -105,30 +112,46 @@ class AbstractPrior(pl.LightningModule):
     def segmentation_criterion(self, pred_seg, gt_seg, log=True):
         gt_seg_1hot = to_1hot(gt_seg)
         loss_seg_bce = self.bce_loss(pred_seg, gt_seg_1hot).mean()
-        loss_seg_dice = self.dice_loss(pred_seg, gt_seg_1hot).mean()
+        loss_seg_dice_ = self.dice_loss(pred_seg, gt_seg_1hot).mean(0).squeeze()
+        loss_seg_dice = loss_seg_dice_.mean()
+
         if log:
-            self.log(f"{self.split_name}/seg_bce", loss_seg_bce.item())
-            self.log(f"{self.split_name}/seg_dice", loss_seg_dice.item())
+            self.log(f"{self.split_name}/seg_bce_loss", loss_seg_bce.item())
+            self.log(f"{self.split_name}/seg_dice_loss", loss_seg_dice.item())
+
+            dice = (1 - loss_seg_dice_).detach().cpu().tolist()
+            self.log(f"{self.split_name}/seg_dice_BG", dice[0], prog_bar=True)
+            self.log(f"{self.split_name}/seg_dice_LV_ENDO", dice[1], prog_bar=True)
+            self.log(f"{self.split_name}/seg_dice_LV_EPI", dice[2], prog_bar=True)
+            self.log(f"{self.split_name}/seg_dice_RV_ENDO", dice[3], prog_bar=True)
+
         return loss_seg_bce + loss_seg_dice
+
+    def do_validation(self, epoch):
+        self.eval()
+        params = deepcopy(self.params)
+        if "dropout" in params:
+            params["dropout"] = 0.0
+        val_model = self.val_model_class(parent_logger=self.logger, train_epoch=epoch,
+                                         **params)
+        state_dict = deepcopy(self.state_dict())
+        del state_dict['h']
+        miss_keys = val_model.load_state_dict(state_dict, strict=False)
+        assert 'h' in miss_keys.missing_keys and len(miss_keys.missing_keys) == 1
+        val_model.h = nn.Parameter(torch.normal(0., 1e-4 ** 2, val_model.h.shape))
+        val_trainer = pl.Trainer(max_epochs=self.val_epochs, accelerator="gpu",
+                                 enable_model_summary=False, logger=False,
+                                 enable_checkpointing=False, callbacks=[ValProgressBar()])
+        val_trainer.fit(val_model, train_dataloaders=DataLoader(self.val_dataset, batch_size=1, shuffle=True))
+        self.train()
+
+    def on_fit_start(self):
+        if self.initial_val:
+            self.do_validation(self.current_epoch)
 
     def on_train_epoch_end(self):
         if (self.current_epoch + 1) % self.val_interval == 0:
-            self.eval()
-            params = deepcopy(self.params)
-            if "dropout" in params:
-                params["dropout"] = 0.0
-            val_model = self.val_model_class(parent_logger=self.logger, train_epoch=self.current_epoch + 1,
-                                             **params)
-            state_dict = deepcopy(self.state_dict())
-            del state_dict['h']
-            miss_keys = val_model.load_state_dict(state_dict, strict=False)
-            assert 'h' in miss_keys.missing_keys and len(miss_keys.missing_keys) == 1
-            val_model.h = nn.Parameter(torch.normal(0., 1e-4**2, val_model.h.shape))
-            val_trainer = pl.Trainer(max_epochs=self.val_epochs, accelerator="gpu",
-                                     enable_model_summary=False, logger=False,
-                                     enable_checkpointing=False, callbacks=[ValProgressBar()])
-            val_trainer.fit(val_model, train_dataloaders=DataLoader(self.val_dataset, batch_size=1, shuffle=True))
-            self.train()
+            self.do_validation(self.current_epoch + 1)
 
 
 class AbstractLatent(pl.LightningModule):
@@ -144,36 +167,60 @@ class AbstractLatent(pl.LightningModule):
     def configure_optimizers(self):
         return torch.optim.Adam([self.h], lr=self.lr)
 
+    def on_fit_start(self):
+        return
+
     def on_train_epoch_end(self):
         return
 
-    def val_logging(self, image: torch.Tensor,
+    def val_logging(self,
+                    step: int,
+                    image: torch.Tensor,
                     seg: Optional[torch.Tensor] = None,
                     loss_pixel: Optional[float] = None,
                     loss_seg: Optional[float] = None,
+                    dice_BG: Optional[float] = None,
+                    dice_LV_ENDO: Optional[float] = None,
+                    dice_LV_EPI: Optional[float] = None,
+                    dice_RV_ENDO: Optional[float] = None,
                     loss_reg: Optional[float] = None):
-        if self.parent_logger is None or self.global_step % self.val_log_interval != 0:
+        if self.parent_logger is None:
             return
         if loss_pixel is not None:
-            self.parent_logger.experiment.add_scalar(f"val_pixel_L2/{self.global_step}", loss_pixel,
+            self.parent_logger.experiment.add_scalar(f"val_pixel_L2/{step}", loss_pixel,
                                                      global_step=self.train_epoch)
         if loss_seg is not None:
-            self.parent_logger.experiment.add_scalar(f"val_seg_loss/{self.global_step}", loss_seg,
+            self.parent_logger.experiment.add_scalar(f"val_seg_loss/{step}", loss_seg,
+                                                     global_step=self.train_epoch)
+        if dice_BG is not None:
+            self.parent_logger.experiment.add_scalar(f"val_dice_BG/{step}", dice_BG,
+                                                     global_step=self.train_epoch)
+        if dice_LV_ENDO is not None:
+            self.parent_logger.experiment.add_scalar(f"val_dice_LV_ENDO/{step}", dice_LV_ENDO,
+                                                     global_step=self.train_epoch)
+        if dice_LV_EPI is not None:
+            self.parent_logger.experiment.add_scalar(f"val_dice_LV_EPI/{step}", dice_LV_EPI,
+                                                     global_step=self.train_epoch)
+        if dice_RV_ENDO is not None:
+            self.parent_logger.experiment.add_scalar(f"val_dice_RV_ENDO/{step}", dice_RV_ENDO,
                                                      global_step=self.train_epoch)
         if loss_reg is not None:
-            self.parent_logger.experiment.add_scalar(f"val_reg_L2/{self.global_step}", loss_reg,
+            self.parent_logger.experiment.add_scalar(f"val_reg_L2/{step}", loss_reg,
                                                      global_step=self.train_epoch)
         im = self.draw_image(image, seg)
-        self.parent_logger.experiment.add_image(f"val_images_{self.global_step}", im, global_step=self.train_epoch)
+        self.parent_logger.experiment.add_image(f"val_images_{step}", im, global_step=self.train_epoch)
 
     def draw_image(self, *args):
         pass
 
     def evaluate_volume_slices(self, out_shape: Tuple[int, ...]):
-        coords = torch.meshgrid(torch.arange(out_shape[0], dtype=torch.float32),
-                                torch.arange(out_shape[1], dtype=torch.float32),
-                                torch.arange(out_shape[2], dtype=torch.float32))
-        coord_arr = torch.stack([c / out_shape[i] - .5 for i, c in enumerate(coords)], dim=-1)
+        """ NOTE: torch.meshgrid has a different behaviour than np.meshgrid,
+        using both interchangeably will produce transposed images. """
+        coords = np.meshgrid(np.arange(out_shape[0], dtype=float),
+                             np.arange(out_shape[1], dtype=float),
+                             np.arange(out_shape[2], dtype=float))
+        coord_arr = np.stack([(c / out_shape[i] - .5) for i, c in enumerate(coords)], axis=-1)
+        coord_arr = torch.from_numpy(coord_arr).to(torch.float32)
         return self.evaluate(coord_arr, self.h[0])
 
     def evaluate_2D_from_constant(self,
@@ -235,11 +282,14 @@ class ImplicitNetPrior(AbstractPrior):
         self.backbone_reg = False
         self.weight_reg = kwargs.get("weight_reg")
 
-        self.val_dataset = SAX3D_test(**kwargs)
         self.val_epochs = kwargs.get("val_max_epochs")
         self.val_interval = kwargs.get("val_interval")
         self.val_model_class = ImplicitNetLatent
         self.params = kwargs
+
+    @property
+    def val_dataset(self) -> torch.utils.data.Dataset:
+        return SAX3D_test(**self.params)
 
     def forward(self, coord, h):
         coord_ = coord.view((-1, 3))
@@ -320,31 +370,41 @@ class ImplicitNetSegPrior(ImplicitNetPrior):
         super(ImplicitNetSegPrior, self).__init__(*args, **kwargs)
         self.num_classes = 4
         self.seg_head = SegmentationHead(self.backbone.out_size, self.num_classes)
-        self.dice_loss = DiceLoss()
+        self.dice_loss = DiceLoss(reduction="none")
         self.bce_loss = nn.BCELoss()
-        self.val_dataset = SAX3D_Seg_test(**kwargs)
         self.val_model_class = ImplicitNetSegLatent
+
+    @property
+    def val_dataset(self) -> torch.utils.data.Dataset:
+        return SAX3D_Seg_test(**self.params)
 
     def forward(self, coord, h):
         coord_ = coord.view((-1, 3))
-        h = torch.tile(h, (coord_.shape[0], 1))
+        # Tile h vector in a manner to allow for batch size > 1
+        h_ = torch.tile(h, (1, coord_.shape[0] // coord.shape[0])).view((-1, h.shape[1]))
 
         c_enc = self.pos_enc(coord_)
-        out = self.backbone((c_enc, h))
+        out = self.backbone((c_enc, h_))
         pred_recon_ = self.recon_head(out)
         pred_recon = pred_recon_.view(coord.shape[:-1])
         pred_seg_ = self.seg_head(out)
-        pred_seg = pred_seg_.view((*coord.shape[:-1], pred_seg_.shape[-1]))
+        pred_seg = pred_seg_.view((*coord.shape[:-1], pred_seg_.shape[-1])).moveaxis(-1, 1)
         return pred_recon, pred_seg
 
     def training_step(self, batch):
         coord, image, sample_idx, seg, aug_params = batch
         h = torch.cat((self.h[sample_idx], aug_params), dim=1)
         pred_im, pred_seg = self.forward(coord, h)
-        loss = self.reconstruction_criterion(pred_im, image)
-        loss += self.segmentation_criterion(pred_seg, seg)
-        loss += self.regularization_criterion(self.h[sample_idx])
+        loss = 0
+        rec_loss = self.reconstruction_criterion(pred_im, image, seg == 0)
+        loss += rec_loss
+        seg_loss = self.segmentation_criterion(pred_seg, seg)
+        loss += seg_loss
+        dice = (1 - self.dice_loss(pred_seg, to_1hot(seg))).squeeze().detach().cpu().tolist()
+        reg_loss = self.regularization_criterion(self.h[sample_idx])
+        loss += reg_loss
         return loss
+
 
     @torch.no_grad()
     def evaluate(self, coord_arr: torch.Tensor, h_vector: torch.Tensor) -> np.array:
@@ -363,7 +423,7 @@ class ImplicitNetSegLatent(AbstractLatent, ImplicitNetSegPrior):
         self.lr = kwargs.get("fine_tune_lr")
         self.train_epoch = train_epoch
         self.train_loss = []
-        self.seg_loss = []
+        self.dice = []
         self.latent_reg_loss = []
         self.batch = None
 
@@ -372,10 +432,16 @@ class ImplicitNetSegLatent(AbstractLatent, ImplicitNetSegPrior):
             fig, ax = plt.subplots(1, 3,)
             fig.set_figwidth(fig.get_figheight()*3)
             ax[0].plot(list(range(len(self.train_loss))), self.train_loss, label="Image L2 Loss")
+            ax[1].set_title("Image Reconstruction Loss")
             ax[0].legend(loc="upper right")
-            ax[1].plot(list(range(len(self.seg_loss))), self.seg_loss, label="Seg Dice Loss")
+            ax[1].plot(list(range(len(self.dice))), [i[0] for i in self.dice], label="Background")
+            ax[1].plot(list(range(len(self.dice))), [i[1] for i in self.dice], label="LV ENDO")
+            ax[1].plot(list(range(len(self.dice))), [i[2] for i in self.dice], label="LV EPI")
+            ax[1].plot(list(range(len(self.dice))), [i[3] for i in self.dice], label="RV ENDO")
+            ax[1].set_title("Segmentation Dice")
             ax[1].legend(loc="upper right")
-            ax[2].plot(list(range(len(self.latent_reg_loss))), self.latent_reg_loss, label="Latent L2 loss")
+            ax[2].plot(list(range(len(self.latent_reg_loss))), self.latent_reg_loss, label="Latent L2")
+            ax[1].set_title("Latent L2 Loss")
             ax[2].legend(loc="upper right")
             self.parent_logger.experiment.add_figure("val_loss_curve", fig, global_step=self.train_epoch)
             del fig
@@ -387,14 +453,15 @@ class ImplicitNetSegLatent(AbstractLatent, ImplicitNetSegPrior):
         seg_ = seg[..., torch.arange(0, seg.shape[-1], self.z_holdout_rate)]
         pred_im, pred_seg = self.forward(coord_, self.h)
 
+        loss = 0
         # Pixel regression loss
-        loss_pixel = self.reconstruction_criterion(pred_im, image_, log=False)
+        loss_pixel = self.reconstruction_criterion(pred_im, image_, seg_ == 0, log=False)
         self.train_loss.append(loss_pixel.item())
-        loss = loss_pixel
+        loss += loss_pixel
 
         # Segmentation loss (not trained on, assume not available at test time). Not added to overall loss here.
-        loss_seg = self.dice_loss(pred_seg, to_1hot(seg_))
-        self.seg_loss.append(loss_seg.item())
+        dice = (1 - self.dice_loss(pred_seg, to_1hot(seg_))).mean(0).squeeze().detach().cpu().tolist()
+        self.dice.append(dice)
         # loss += loss_seg
 
         # Regularization loss for h (and optionally network weights)
@@ -403,8 +470,9 @@ class ImplicitNetSegLatent(AbstractLatent, ImplicitNetSegPrior):
         self.latent_reg_loss.append(loss_reg.item())
         loss += loss_reg
 
-        self.val_logging(image[0], seg=seg[0], loss_pixel=loss_pixel.item(), loss_seg=loss_seg.item(), loss_reg=loss_reg.item())
-        return loss.mean()
+        if self.current_epoch % self.val_log_interval == 0:
+            self.val_logging(self.current_epoch, image[0], seg=seg[0], loss_pixel=loss_pixel.item(), dice_BG=dice[0], dice_LV_ENDO=dice[1], dice_LV_EPI=dice[2], dice_RV_ENDO=dice[3], loss_reg=loss_reg.item())
+        return loss
 
     def draw_image(self, gt_im, gt_seg):
         gt_2D_ims = [gt_im[..., i].cpu().numpy() for i in range(gt_im.shape[-1])]
@@ -421,12 +489,10 @@ class ImplicitNetSegLatent(AbstractLatent, ImplicitNetSegPrior):
             gt_seg_row.append(masked_im)
             gt_seg_row.append(np.zeros_like(masked_im))
 
-        pred_im, pred_seg = self.evaluate_volume_slices((*gt_im.shape[:2], gt_im.shape[2]*2))
+        pred_im, pred_seg = self.evaluate_volume_slices((*gt_im.shape[:2], gt_im.shape[2] * 2))
         pred_im_row = [np.stack([pred_im[..., i]]*3, axis=-1) for i in range(pred_im.shape[-1])]
         pred_seg_row = [draw_mask_to_image(pred_im[..., i],
-                                           np.argmax(pred_seg[..., i, :], axis=-1))
-                        for i in range(pred_im.shape[-1])]
-
+                                           np.argmax(pred_seg[..., i], axis=0)) for i in range(pred_im.shape[-1])]
         pred_im_row = np.concatenate(pred_im_row, axis=1)
         pred_seg_row = np.concatenate(pred_seg_row, axis=1)
         gt_im_row = np.concatenate(gt_im_row, axis=1)
@@ -454,7 +520,7 @@ class ImplicitNetSeparateSegPrior(ImplicitNetSegPrior):
         pred_recon = pred_recon_.view(coord.shape[:-1])
         out_seg_ = self.seg_backbone((c_enc, h))
         pred_seg_ = self.seg_head(out_seg_)
-        pred_seg = pred_seg_.view((*coord.shape[:-1], pred_seg_.shape[-1]))
+        pred_seg = pred_seg_.view((*coord.shape[:-1], pred_seg_.shape[-1])).moveaxis(-1, 1)
         return pred_recon, pred_seg
 
 
@@ -491,7 +557,7 @@ class ImplicitNetMountedSegPrior(ImplicitNetSegPrior):
         c_enc = self.pos_enc(coord_)
         out_ = self.seg_backbone((c_enc, h))
         pred_seg_ = self.seg_head(out_)
-        pred_seg = pred_seg_.view((*coord.shape[:-1], pred_seg_.shape[-1]))
+        pred_seg = pred_seg_.view((*coord.shape[:-1], pred_seg_.shape[-1])).moveaxis(-1, 1)
         out_ = self.backbone((c_enc, out_))
         pred_recon_ = self.recon_head(out_)
         pred_recon = pred_recon_.view(coord.shape[:-1])

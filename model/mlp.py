@@ -3,6 +3,21 @@ from torch import nn
 from typing import Tuple
 
 
+class Layer(nn.Module):
+    def __init__(self, in_size, out_size, activation_func_class, dropout=0.0):
+        super(Layer, self).__init__()
+        self.linear = nn.Linear(in_size, out_size)
+        self.activation = activation_func_class()
+        if hasattr(self.activation, "weight_init"):
+            self.linear.apply(self.activation.weight_init)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.activation(self.linear(x))
+        x = self.dropout(x)
+        return x
+
+
 class MLP(nn.Module):
     def __init__(self, coord_size, embed_size, activation_func_class, **kwargs):
         super(MLP, self).__init__()
@@ -12,23 +27,16 @@ class MLP(nn.Module):
         dropout = kwargs.get("dropout")
 
         hidden_input_size = hidden_size + (coord_size if input_coord_to_all_layers else 0)
-        a = [nn.Linear(coord_size + embed_size, hidden_size), nn.Dropout(dropout)]
+        a = [Layer(coord_size + embed_size, hidden_size, activation_func_class, dropout=dropout)]
         for i in range(num_hidden_layers - 1):
-            a.append(nn.Linear(hidden_input_size, hidden_size))
-            a.append(nn.Dropout(dropout))
+            a.append(Layer(hidden_input_size, hidden_size, activation_func_class, dropout=dropout))
         self.hid_layers = nn.ModuleList(a)
-        # self.hid_layers = nn.ModuleList([nn.Linear(coord_size + embed_size, hidden_size),
-        #                                  *[nn.Linear(hidden_input_size, hidden_size) for _ in range(num_hidden_layers - 1)]])
-
         self.out_size = hidden_size
-        self.activation_func = activation_func_class()
-        if hasattr(self.activation_func, "weight_init"):
-            self.hid_layers.apply(self.activation_func.weight_init)
 
     def forward(self, x: Tuple[torch.Tensor, torch.Tensor]):
         x = torch.cat(x, dim=1)
         for layer in self.hid_layers:
-            x = self.activation_func(layer(x))
+            x = layer(x)
         return x
 
 
@@ -37,10 +45,7 @@ class ResMLP(MLP):
         coord, prev_x = x
         x = torch.cat(x, dim=1)
         for layer in self.hid_layers:
-            if isinstance(layer, nn.Dropout):
-                x = layer(x)
-                continue
-            x = self.activation_func(layer(x)) + prev_x
+            x = layer(x) + prev_x
             prev_x = x
         return x
 
@@ -49,7 +54,7 @@ class MLPHiddenCoords(MLP):
     def forward(self, x: Tuple[torch.Tensor, torch.Tensor]):
         coord, x = x
         for layer in self.hid_layers:
-            x = self.activation_func(layer(torch.cat((coord, x), dim=1)))
+            x = layer(torch.cat((coord, x), dim=1))
         return x
 
 
@@ -57,7 +62,7 @@ class ResMLPHiddenCoords(MLP):
     def forward(self, x: Tuple[torch.Tensor, torch.Tensor]):
         coord, x = x
         for layer in self.hid_layers:
-            x = self.activation_func(layer(torch.cat((coord, x), dim=1))) + x
+            x = layer(torch.cat((coord, x), dim=1)) + x
         return x
 
 
@@ -68,7 +73,7 @@ class SegmentationHead(nn.Module):
 
     def forward(self, x: torch.Tensor):
         out = self.seg_layer(x)
-        out = nn.functional.softmax(out, dim=-1)
+        out = nn.functional.softmax(out, dim=1)
         return out
 
 

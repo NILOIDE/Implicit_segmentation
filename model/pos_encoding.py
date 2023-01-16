@@ -1,3 +1,5 @@
+from typing import Any
+
 import torch
 from torch import nn
 import math
@@ -54,7 +56,7 @@ class PosEncodingNeRFOptimized(PosEncodingNeRF):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.exp_i_pi = torch.cat([2**torch.arange(i, dtype=torch.float32,)[None] * np.pi for i in self.num_frequencies], dim=1).to(device)
+        self.exp_i_pi = torch.cat([2**torch.arange(i, dtype=torch.float32, device=device)[None] * np.pi for i in self.num_frequencies], dim=1)
 
     def __repr__(self):
         d = "xyzt"
@@ -63,9 +65,8 @@ class PosEncodingNeRFOptimized(PosEncodingNeRF):
     def forward(self, coords):
         coords_ = torch.cat([torch.tile(coords[..., j:j+1], (1, n)) for j, n in enumerate(self.num_frequencies)], dim=-1)
         exp_i_pi = torch.tile(self.exp_i_pi, (coords_.shape[0], 1))
-        sin = torch.sin(exp_i_pi * coords_)
-        cos = torch.cos(exp_i_pi * coords_)
-        out = torch.cat((coords, sin, cos), dim=-1)
+        prod = exp_i_pi * coords
+        out = torch.cat((coords, torch.sin(prod), torch.cos(prod)), dim=-1)
         return out
 
 
@@ -74,24 +75,27 @@ class PosEncodingGaussian(PosEncodingNone):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.num_frequencies = kwargs.get("num_frequencies")
+        self.freq_scale = kwargs.get("freq_scale")
         assert isinstance(self.num_frequencies, tuple)
-        assert len(self.num_frequencies) == self.in_features
-        total_freqs = int(np.sum(self.num_frequencies))
+        assert len(self.num_frequencies) == 1
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.B_gauss = torch.normal(0.0, 1.0, size=(1, total_freqs), device="cuda").to(device)
+        self.B_gauss = torch.normal(0.0, 1.0, size=(3, self.num_frequencies[0]), requires_grad=False).to(device) * self.freq_scale
         self.B_gauss_pi = 2. * np.pi * self.B_gauss
 
-        self.out_dim = self.in_features + 2 * total_freqs
+        # self.out_dim = 2 * total_freqs
+        self.out_dim = 3 + 2 * self.num_frequencies[0]
 
     def __repr__(self):
         d = "xyzt"
         return f"Gaussian ({d[:self.in_features]} [{self.num_frequencies}])"
 
-    def forward(self, coords):
-        coords_ = torch.cat([torch.tile(coords[..., j:j+1], (1, n)) for j, n in enumerate(self.num_frequencies)], dim=-1)
-        B_gauss_pi = torch.tile(self.B_gauss_pi, (coords_.shape[0], 1))
+    def get_extra_state(self) -> Any:
+        return {"B_gauss_pi": self.B_gauss_pi}  # Required to store gaussian array into network state dict
 
-        sin = torch.sin(coords_ * B_gauss_pi)
-        cos = torch.cos(coords_ * B_gauss_pi)
-        out = torch.cat((coords, sin, cos), dim=-1)
+    def set_extra_state(self, state: Any):
+        self.B_gauss_pi = state["B_gauss_pi"]  # Required to store gaussian array into network state dict
+
+    def forward(self, coords):
+        prod = coords @ self.B_gauss_pi
+        out = torch.cat((coords, torch.sin(prod), torch.cos(prod)), dim=-1)
         return out
