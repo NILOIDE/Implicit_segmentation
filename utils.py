@@ -7,7 +7,7 @@ from monai.losses import ContrastiveLoss
 class ValProgressBar(TQDMProgressBar):
     def on_train_epoch_start(self, trainer, *_) -> None:
         self.main_progress_bar.initial = 0
-        self.main_progress_bar.set_description(f"Validation epoch {trainer.current_epoch}")
+        self.main_progress_bar.set_description(f"Validation epoch {trainer.current_epoch} / {trainer.max_epochs}")
 
 
 def draw_mask_to_image(image: np.ndarray, mask: np.ndarray) -> np.ndarray:

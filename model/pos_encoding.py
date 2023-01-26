@@ -56,7 +56,8 @@ class PosEncodingNeRFOptimized(PosEncodingNeRF):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.exp_i_pi = torch.cat([2**torch.arange(i, dtype=torch.float32, device=device)[None] * np.pi for i in self.num_frequencies], dim=1)
+        self.freq_scale = kwargs.get("freq_scale")
+        self.exp_i_pi = torch.cat([2**torch.arange(i, dtype=torch.float32, device=device)[None] * self.freq_scale * np.pi for i in self.num_frequencies], dim=1)
 
     def __repr__(self):
         d = "xyzt"
@@ -65,7 +66,7 @@ class PosEncodingNeRFOptimized(PosEncodingNeRF):
     def forward(self, coords):
         coords_ = torch.cat([torch.tile(coords[..., j:j+1], (1, n)) for j, n in enumerate(self.num_frequencies)], dim=-1)
         exp_i_pi = torch.tile(self.exp_i_pi, (coords_.shape[0], 1))
-        prod = exp_i_pi * coords
+        prod = exp_i_pi * coords_
         out = torch.cat((coords, torch.sin(prod), torch.cos(prod)), dim=-1)
         return out
 
