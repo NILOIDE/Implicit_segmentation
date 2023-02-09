@@ -9,8 +9,7 @@ import numpy as np
 class PosEncodingNone(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__()
-        side_length = kwargs.get("side_length")
-        self.in_features = len(side_length)
+        self.in_features = kwargs.get("coord_dimensions")
         self.out_dim = self.in_features
 
     def forward(self, coords):

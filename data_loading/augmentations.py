@@ -2,7 +2,6 @@ from abc import abstractmethod
 from typing import Tuple, List, Dict
 
 import numpy as np
-import torch
 import random
 import math
 
