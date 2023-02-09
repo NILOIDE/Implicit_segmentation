@@ -3,6 +3,8 @@ from dataclasses import dataclass
 import os
 from datetime import datetime
 from pathlib import Path
+import argparse
+import yaml
 
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
@@ -49,7 +51,13 @@ class Params:
     #                                                          ("gamma", {"gamma_lim": (0.7, 1.4)}))
 
 
-def main(params, exp_name=''):
+def main_train(config_path=None, exp_name=''):
+    config = {}
+    if config_path is not None:
+        with open(config_path, "r") as f:
+            config = yaml.safe_load(f)
+
+    params = Params(**config)
     # dataset = Seg3DWholeImage_SAX(**params.__dict__)
     dataset = Seg4DWholeImage_SAX(**params.__dict__)
     coord_dimensions = dataset.sample_coords.shape[-1]
@@ -80,18 +88,43 @@ def main(params, exp_name=''):
     print("Elapsed time:", datetime.now() - start)
 
 
+def main_eval():
+    raise NotImplementedError
+
+
+def parse_command_line():
+    main_parser = argparse.ArgumentParser(description="Implicit Segmentation",
+                                          formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+
+    main_subparsers = main_parser.add_subparsers(dest='pipeline')
+
+    # train
+    parser_train = main_subparsers.add_parser("train")
+    parser_train.add_argument("-c", "--config",
+                              help="path to configuration file", required=False,
+                              default=r"C:\Users\nilst\Documents\Implicit_segmentation\configs\4d_cardiac_config.yaml"
+                              )
+    parser_train.add_argument("-n", "--exp_name",
+                              help="custom experiment name", required=False,
+                              default=""
+                              )
+    parser_train.set_defaults(func=main_train)
+
+    # eval
+    parser_eval = main_subparsers.add_parser("eval")
+    parser_eval.add_argument("-c", "--config",
+                             help="path to configuration yml file", required=False,
+                             default=r"C:\Users\nilst\Documents\Implicit_segmentation\configs\4d_cardiac_config.yaml"
+                             )
+    parser_eval.set_defaults(func=main_eval)
+
+    return main_parser.parse_args()
+
+
 if __name__ == '__main__':
-    # for enc, scale in [("gaussian", 5.0), ("gaussian", 0.2)]:
-    #     print("Testing:", "Enc:", enc, "Scale", scale)
-    #     params = Params(pos_encoding=enc, freq_scale=scale)
-    #     main(params, exp_name=f"NumLayers_{params.num_hidden_layers}_encType_{params.pos_encoding}_freqs_{params.num_frequencies}_GausScale_{params.freq_scale}_actFunc_{params.activation}_modelType_{params.model_type}")
-    #     for scale in [0.5, 1.0, 5.]:
-    #         for freqs in [(64,), (128,), (256,)]:
-    #             print("Testing: Layers:", lays, "Gauss scale:", scale, "Freqs:", freqs)
-    #             start = datetime.now()
-    #             params = Params(num_hidden_layers=lays, freq_scale=scale, num_frequencies=freqs)
-    #             main(params, exp_name=f"NumLayers_{lays}_GaussScale_{scale}_GaussFeats_{freqs}")
-    #             print("Elapsed time:", datetime.now() - start)
-    params = Params()
-    main(params, exp_name=f"NumLayers_{params.num_hidden_layers}_hidSize_{params.hidden_size}_enc_{params.pos_encoding}_modelType_{params.model_type}")
-    # main(p, exp_name=f"SkipCon_{p.skip_connections}_NumLayers_{p.num_hidden_layers}_posEnc_{p.pos_encoding}_hiddenCoords_{p.input_coord_to_all_layers}")
+    parse_command_line()
+    args = parse_command_line()
+    if args.pipeline is None:
+        main_train()
+    else:
+        args.func(args)
