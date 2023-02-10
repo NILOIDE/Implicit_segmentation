@@ -29,11 +29,11 @@ import os
 # Stop OpenMP from complaining about multiple instances (caused by Lightning)
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 
-from data_loading.data_loader import Seg3DWholeImage_SAX_test, Seg4DWholeImage_SAX_test
+from data_loading.data_loader import AbstractDataset
 from model.activation_functions import Sine, WIRE
 from model.mlp import MLP, ResMLP, ResMLPHiddenCoords, MLPHiddenCoords, ReconstructionHead, SegmentationHead
 from model.pos_encoding import PosEncodingNeRFOptimized, PosEncodingGaussian, PosEncodingNone
-from utils import ValProgressBar, draw_mask_to_image, to_1hot
+from utils import ValProgressBar, draw_mask_to_image, to_1hot, square_image, normalize_image
 
 
 def process_params(params: Dict[str, Any]):
@@ -70,19 +70,19 @@ def process_params(params: Dict[str, Any]):
 
 
 class AbstractPrior(pl.LightningModule):
-    def __init__(self, *args, aug_num_parameters: int = 0, **kwargs):
+    def __init__(self, *args, val_dataset=None, aug_num_parameters: int = 0, **kwargs):
         super(AbstractPrior, self).__init__()
         self.save_hyperparameters(kwargs)
         self.activation_class, self.pos_encoding_class, self.backbone_class = process_params(kwargs)
         self.latent_size = kwargs.get("latent_size")
-        self.lr = kwargs.get("lr")
+        self.lr = float(kwargs.get("lr"))
         self.num_train_samples = kwargs.get("num_train_samples")
         self.num_coord_dims = kwargs.get("coord_dimensions")
         self.side_length = kwargs.get("side_length")
         self.h = nn.Parameter(torch.normal(0., 0.1**2, (self.num_train_samples, self.latent_size - aug_num_parameters,)), requires_grad=True)
 
-        self.latent_reg = kwargs.get("latent_reg")
-        self.weight_reg = kwargs.get("weight_reg")
+        self.latent_reg = float(kwargs.get("latent_reg"))
+        self.weight_reg = float(kwargs.get("weight_reg"))
         self.backbone_reg = self.weight_reg > 0.0
 
         self.mse_loss = nn.MSELoss(reduction="none")
@@ -91,16 +91,13 @@ class AbstractPrior(pl.LightningModule):
         self.dice_loss = None
         self.seg_class_weights = None
 
+        self.val_dataset: AbstractDataset = val_dataset
         self.initial_val = kwargs.get("initial_val", False)
         self.train_log_interval = kwargs.get("train_log_interval")
         self.val_epochs = kwargs.get("val_max_epochs")
         self.val_interval = kwargs.get("val_interval")
         self.params = kwargs
         self.split_name = 'train'
-
-    @abc.abstractmethod
-    def val_dataset(self) -> torch.utils.data.Dataset:
-        pass
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.lr)
@@ -174,8 +171,7 @@ class AbstractPrior(pl.LightningModule):
             params["dropout"] = 0.0
         val_model = self.val_model_class(parent_logger=self.logger,
                                          train_epoch=epoch,
-                                         sample_img_path=self.val_dataset.im_paths[0],
-                                         sample_seg_path=self.val_dataset.seg_paths[0],
+                                         dataset=self.val_dataset,
                                          **params)
         state_dict = deepcopy(self.state_dict())
         del state_dict['h']
@@ -199,18 +195,28 @@ class AbstractPrior(pl.LightningModule):
 
 
 class AbstractLatent(pl.LightningModule):
-    def __init__(self, parent_logger=None, train_epoch=None, sample_img_path=None, sample_seg_path=None, *args, **kwargs):
+    def __init__(self, parent_logger=None, train_epoch=None, dataset: AbstractDataset = None, *args, **kwargs):
         super(AbstractLatent, self).__init__(*args, **kwargs)
         self.num_coord_dims = kwargs.get("coord_dimensions")
         self.max_epochs = kwargs.get("val_max_epochs")
-        self.h = nn.Parameter(torch.normal(0., 1e-4**2, (1, self.latent_size)), requires_grad=True)
+        self.num_samples = len(dataset)
+        self.lr = float(kwargs.get("fine_tune_lr"))
+        self.h = nn.Parameter(torch.normal(0., 1e-4**2, (self.num_samples, self.latent_size)), requires_grad=True)
         self.parent_logger = parent_logger
         self.train_epoch = train_epoch
         self.split_name = 'val'
         self.z_holdout_rate = kwargs.get("val_z_holdout_rate", 1)
         self.t_holdout_rate = kwargs.get("val_t_holdout_rate", 1)
-        self.sample_img_path = sample_img_path
-        self.sample_seg_path = sample_seg_path
+        self.dataset = dataset
+
+        self.train_loss = {}
+        self.train_pixel_loss = {}
+        self.train_seg_loss = {}
+        self.train_reg_loss = {}
+        self.dice_BG = {}
+        self.dice_LV_Pool = {}
+        self.dice_LV_Myo = {}
+        self.dice_RV_Pool = {}
 
     def configure_optimizers(self):
         return torch.optim.Adam([self.h], lr=self.lr)
@@ -219,32 +225,72 @@ class AbstractLatent(pl.LightningModule):
         return
 
     def on_train_epoch_end(self):
-        return
+        if self.parent_logger is not None and self.current_epoch % self.val_log_interval == 0:
+            # Logged to training trainer's logger
+            if self.current_epoch in self.train_loss:
+                self.parent_logger.experiment.add_scalar(f"val_pixel_L2/{self.current_epoch}",
+                                                         np.mean(self.train_loss[self.current_epoch]),
+                                                         global_step=self.train_epoch)
+            if self.current_epoch in self.train_pixel_loss is not None:
+                self.parent_logger.experiment.add_scalar(f"val_pixel_L2/{self.current_epoch}",
+                                                         np.mean(self.train_pixel_loss[self.current_epoch]),
+                                                         global_step=self.train_epoch)
+            if self.current_epoch in self.train_seg_loss is not None:
+                self.parent_logger.experiment.add_scalar(f"val_seg_loss/{self.current_epoch}",
+                                                         np.mean(self.train_seg_loss[self.current_epoch]),
+                                                         global_step=self.train_epoch)
+            if self.current_epoch in self.loss_reg is not None:
+                self.parent_logger.experiment.add_scalar(f"val_reg_L2/{self.current_epoch}",
+                                                         np.mean(self.train_reg_loss[self.current_epoch]),
+                                                         global_step=self.train_epoch)
+            if self.current_epoch in self.dice_BG is not None:
+                self.parent_logger.experiment.add_scalar(f"val_dice_BG/{self.current_epoch}",
+                                                         np.mean(self.dice_BG[self.current_epoch]),
+                                                         global_step=self.train_epoch)
+            if self.current_epoch in self.dice_LV_Pool is not None:
+                self.parent_logger.experiment.add_scalar(f"val_dice_LV_Pool/{self.current_epoch}",
+                                                         np.mean(self.dice_LV_Pool[self.current_epoch]),
+                                                         global_step=self.train_epoch)
+            if self.current_epoch in self.dice_LV_Myo is not None:
+                self.parent_logger.experiment.add_scalar(f"val_dice_LV_Myo/{self.current_epoch}",
+                                                         np.mean(self.dice_LV_Myo[self.current_epoch]),
+                                                         global_step=self.train_epoch)
+            if self.current_epoch in self.dice_RV_Pool is not None:
+                self.parent_logger.experiment.add_scalar(f"val_dice_RV_Pool/{self.current_epoch}",
+                                                         np.mean(self.dice_RV_Pool[self.current_epoch]),
+                                                         global_step=self.train_epoch)
+
+            # Draw images and save them to logger
+            for sample_idx in range(len(self.dataset)):
+                im = self.draw_image(sample_idx)
+                self.parent_logger.experiment.add_image(f"val_images_{self.current_epoch}",
+                                                        im,
+                                                        global_step=self.train_epoch)
 
     def on_fit_end(self):
         if self.parent_logger is not None:
             self.draw_fit_plot()
-            if self.num_coord_dims == 4 and self.sample_img_path is not None and self.sample_seg_path is not None:
-                vid = self.draw_time_video(self.sample_img_path, self.sample_seg_path)
+            if self.num_coord_dims == 4 and self.dataset is not None:
+                vid = self.draw_time_video(self.dataset.im_paths[0], self.dataset.seg_paths[0])
                 self.parent_logger.experiment.add_video(f"val_end_video", vid[None], fps=10, global_step=self.train_epoch)
 
     def val_logging(self,
-                    step: int,
-                    image: torch.Tensor,
-                    seg: Optional[torch.Tensor] = None,
                     loss_pixel: Optional[float] = None,
                     loss_seg: Optional[float] = None,
                     dice_BG: Optional[float] = None,
                     dice_LV_Pool: Optional[float] = None,
                     dice_LV_Myo: Optional[float] = None,
                     dice_RV_Pool: Optional[float] = None,
-                    loss_reg: Optional[float] = None):
+                    loss_reg: Optional[float] = None,
+                    **kwargs):
 
-        # Log to progress bar
+        # Logged only to progress bar
         if loss_pixel is not None:
             self.log(f"val_pixel_L2", loss_pixel, prog_bar=True, on_step=True)
         if loss_seg is not None:
             self.log(f"val_seg_loss", loss_seg, prog_bar=True, on_step=True)
+        if loss_reg is not None:
+            self.log(f"val_reg_loss", loss_reg, prog_bar=True, on_step=True)
         if dice_BG is not None:
             self.log(f"val_dice_BG", dice_BG, prog_bar=True, on_step=True)
         if dice_LV_Pool is not None:
@@ -254,35 +300,40 @@ class AbstractLatent(pl.LightningModule):
         if dice_RV_Pool is not None:
             self.log(f"val_dice_RV_Pool", dice_RV_Pool, prog_bar=True, on_step=True)
 
-        if self.parent_logger is not None and self.current_epoch % self.val_log_interval == 0:
-            # Log to training trainer's logger
-            if loss_pixel is not None:
-                self.parent_logger.experiment.add_scalar(f"val_pixel_L2/{step}", loss_pixel,
-                                                         global_step=self.train_epoch)
-            if loss_seg is not None:
-                self.parent_logger.experiment.add_scalar(f"val_seg_loss/{step}", loss_seg,
-                                                         global_step=self.train_epoch)
-            if dice_BG is not None:
-                self.parent_logger.experiment.add_scalar(f"val_dice_BG/{step}", dice_BG,
-                                                         global_step=self.train_epoch)
-            if dice_LV_Pool is not None:
-                self.parent_logger.experiment.add_scalar(f"val_dice_LV_Pool/{step}", dice_LV_Pool,
-                                                         global_step=self.train_epoch)
-            if dice_LV_Myo is not None:
-                self.parent_logger.experiment.add_scalar(f"val_dice_LV_Myo/{step}", dice_LV_Myo,
-                                                         global_step=self.train_epoch)
-            if dice_RV_Pool is not None:
-                self.parent_logger.experiment.add_scalar(f"val_dice_RV_Pool/{step}", dice_RV_Pool,
-                                                         global_step=self.train_epoch)
-            if loss_reg is not None:
-                self.parent_logger.experiment.add_scalar(f"val_reg_L2/{step}", loss_reg,
-                                                         global_step=self.train_epoch)
-            # Draw images and save them to logger
-            im = self.draw_image(image, seg)
-            self.parent_logger.experiment.add_image(f"val_images_{step}", im, global_step=self.train_epoch)
+    def draw_image(self, sample_idx):
+        t = 0  # ED frame is t index 0
+        gt_im = nib.load(self.dataset.im_paths[sample_idx]).dataobj[..., t]
+        gt_seg = nib.load(self.dataset.seg_paths[sample_idx]).dataobj[..., t]
+        gt_im, gt_seg = square_image(gt_im, gt_seg)
+        gt_im = normalize_image(gt_im)
+        # gt_im = cv2.resize(gt_im, self.out_shape[:2])
+        # gt_seg = cv2.resize(gt_seg, self.out_shape[:2], interpolation=cv2.INTER_NEAREST)
 
-    def draw_image(self, *args):
-        raise NotImplementedError
+        gt_2D_ims = [gt_im[..., i] for i in range(gt_im.shape[-1])]
+        gt_2D_segs = [gt_seg[..., i] for i in range(gt_seg.shape[-1])]
+        gt_im_row = []
+        gt_seg_row = []
+        for i, (og_im, og_seg) in enumerate(zip(gt_2D_ims, gt_2D_segs)):
+            og_im_rgb = np.stack((og_im, og_im, og_im), axis=-1)
+            if i % self.z_holdout_rate == 0:
+                og_im_rgb[[0]*og_im_rgb.shape[1], list(range(og_im_rgb.shape[1]))] = np.array((0, 1, 0))
+            gt_im_row.append(og_im_rgb)
+            gt_im_row.append(np.zeros_like(og_im_rgb))
+            masked_im = draw_mask_to_image(og_im, og_seg)
+            gt_seg_row.append(masked_im)
+            gt_seg_row.append(np.zeros_like(masked_im))
+
+        pred_im, pred_seg = self.evaluate_volume((*gt_im.shape[:2], gt_im.shape[2] * 2))
+        pred_im_row = [np.stack([pred_im[..., i]]*3, axis=-1) for i in range(pred_im.shape[-1])]
+        pred_seg_row = [draw_mask_to_image(pred_im[..., i],
+                                           np.argmax(pred_seg[..., i], axis=0)) for i in range(pred_im.shape[-1])]
+        pred_im_row = np.concatenate(pred_im_row, axis=1)
+        pred_seg_row = np.concatenate(pred_seg_row, axis=1)
+        gt_im_row = np.concatenate(gt_im_row, axis=1)
+        gt_seg_row = np.concatenate(gt_seg_row, axis=1)
+
+        im = np.concatenate((gt_im_row, pred_im_row, pred_seg_row, gt_seg_row), axis=0)
+        return im.transpose((2, 0, 1))
 
     def draw_fit_plot(self):
         print("Generating fit plot...")
@@ -434,10 +485,6 @@ class ImplicitNetSegPrior(AbstractPrior):
         self.val_model_class = ImplicitNetSegLatent
         self.seg_class_weights = torch.tensor(kwargs.get("seg_class_weights"), dtype=torch.float32, device="cuda")
 
-    @property
-    def val_dataset(self) -> torch.utils.data.Dataset:
-        return Seg4DWholeImage_SAX_test(**self.params)
-
     def forward(self, coord, h):
         coord_ = coord.view((-1, coord.shape[-1]))
         # Tile h vector in a manner to allow for batch size > 1
@@ -491,11 +538,7 @@ class ImplicitNetSegLatent(AbstractLatent, ImplicitNetSegPrior):
         super(ImplicitNetSegLatent, self).__init__(*args, **kwargs)
         self.parent_logger = parent_logger
         self.val_log_interval = kwargs.get("val_log_interval")
-        self.lr = kwargs.get("fine_tune_lr")
         self.train_epoch = train_epoch
-        self.train_loss = []
-        self.dice = []
-        self.latent_reg_loss = []
         self.batch = None
 
     def training_step(self, batch):
@@ -503,24 +546,24 @@ class ImplicitNetSegLatent(AbstractLatent, ImplicitNetSegPrior):
         coord_ = coord[..., torch.arange(0, coord.shape[-2], self.z_holdout_rate), :]
         image_ = image[..., torch.arange(0, image.shape[-1], self.z_holdout_rate)]
         seg_ = seg[..., torch.arange(0, seg.shape[-1], self.z_holdout_rate)]
-        pred_im, pred_seg = self.forward(coord_, self.h)
+        pred_im, pred_seg = self.forward(coord_, self.h[sample_idx])
 
         loss = 0
         # Pixel regression loss
         background = pred_seg[:, 0].detach() > 0.5
         loss_pixel = self.reconstruction_criterion(pred_im, image_, log=False)#, background_mask=background)
-        self.train_loss.append(loss_pixel.item())
+        self.train_loss[self.current_epoch].append(loss_pixel.item())
         loss += loss_pixel
 
         # Segmentation dice (not trained on, assume not available at test time). Not added to overall loss here.
         with torch.no_grad():
             dice = (1 - self.dice_loss(pred_seg.round(), to_1hot(seg_))).mean(0).squeeze().detach().cpu().tolist()
-            self.dice.append(dice)
+            self.dice[self.current_epoch].append(dice)
 
         # Regularization loss for h (and optionally network weights)
         loss_reg = None
         loss_reg = self.regularization_criterion(self.h[sample_idx], log=False)
-        self.latent_reg_loss.append(loss_reg.item())
+        self.latent_reg_loss[self.current_epoch].append(loss_reg.item())
         loss += loss_reg
 
         progress = dict(loss_pixel=loss_pixel.item(),
@@ -528,37 +571,10 @@ class ImplicitNetSegLatent(AbstractLatent, ImplicitNetSegPrior):
                         dice_LV_Pool=dice[1],
                         dice_LV_Myo=dice[2],
                         dice_RV_Pool=dice[3],
-                        loss_reg=loss_reg.item())
+                        )
         del loss_pixel, dice, loss_reg
-        self.val_logging(self.current_epoch, image[0], seg=seg[0], **progress)
+        self.val_logging(**progress)
         return loss
-
-    def draw_image(self, gt_im, gt_seg):
-        gt_2D_ims = [gt_im[..., i].cpu().numpy() for i in range(gt_im.shape[-1])]
-        gt_2D_segs = [gt_seg[..., i].cpu().numpy() for i in range(gt_seg.shape[-1])]
-        gt_im_row = []
-        gt_seg_row = []
-        for i, (og_im, og_seg) in enumerate(zip(gt_2D_ims, gt_2D_segs)):
-            og_im_rgb = np.stack((og_im, og_im, og_im), axis=-1)
-            if i % self.z_holdout_rate == 0:
-                og_im_rgb[[0]*og_im_rgb.shape[1], list(range(og_im_rgb.shape[1]))] = np.array((0, 1, 0))
-            gt_im_row.append(og_im_rgb)
-            gt_im_row.append(np.zeros_like(og_im_rgb))
-            masked_im = draw_mask_to_image(og_im, og_seg)
-            gt_seg_row.append(masked_im)
-            gt_seg_row.append(np.zeros_like(masked_im))
-
-        pred_im, pred_seg = self.evaluate_volume((*gt_im.shape[:2], gt_im.shape[2] * 2))
-        pred_im_row = [np.stack([pred_im[..., i]]*3, axis=-1) for i in range(pred_im.shape[-1])]
-        pred_seg_row = [draw_mask_to_image(pred_im[..., i],
-                                           np.argmax(pred_seg[..., i], axis=0)) for i in range(pred_im.shape[-1])]
-        pred_im_row = np.concatenate(pred_im_row, axis=1)
-        pred_seg_row = np.concatenate(pred_seg_row, axis=1)
-        gt_im_row = np.concatenate(gt_im_row, axis=1)
-        gt_seg_row = np.concatenate(gt_seg_row, axis=1)
-
-        im = np.concatenate((gt_im_row, pred_im_row, pred_seg_row, gt_seg_row), axis=0)
-        return im.transpose((2, 0, 1))
 
 
 class ImplicitNetSeparateSegPrior(ImplicitNetSegPrior):

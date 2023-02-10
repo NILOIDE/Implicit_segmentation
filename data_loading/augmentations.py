@@ -116,7 +116,7 @@ class RotateCoords(AbstractAug):
 
 class GammaShift(AbstractAug):
     def __init__(self, gamma_lim=(0.7, 1.4)):
-        assert isinstance(gamma_lim, tuple)
+        assert isinstance(gamma_lim, (tuple, list))
         self.gamma_lim = gamma_lim
         self.num_parameters = 1
 

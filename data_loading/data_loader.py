@@ -7,8 +7,7 @@ import numpy as np
 from pathlib import Path
 import nibabel as nib
 import cv2
-from utils import draw_mask_to_image, find_sax_ED_images, find_sax_images
-
+from utils import draw_mask_to_image, find_sax_ED_images, find_sax_images, normalize_image, square_image
 
 from data_loading.augmentations import TranslateCoords, RotateCoords, GammaShift
 
@@ -20,7 +19,7 @@ UKBB_TEST_IMGS_DIR = Path(r"C:\Users\nilst\Documents\Implicit_segmentation\data\
 class AbstractDataset(Dataset):
     def __init__(self, load_dir=UKBB_IMGS_DIR, side_length=(128, 128, -1), augmentations=(), **kwargs):
         self.load_dir = load_dir
-        self.im_paths, self.seg_paths, self.bboxes = self.find_images()
+        self.im_paths, self.seg_paths, self.bboxes = self.find_images(**kwargs)
         # If a side_length value was left as -1 by the user, use the max shape of that dimension instead
         self.out_shape = np.array(side_length)
         self.augs = self.parse_augmentations(augmentations)#[TranslateCoords(x_lim=0.05, y_lim=0.05)]
@@ -32,14 +31,15 @@ class AbstractDataset(Dataset):
     def __len__(self):
         return len(self.im_paths)
 
-    def find_images(self):
+    def find_images(self, **kwargs):
         raise NotImplementedError("This is abstract class. Implement your own.")
 
     @staticmethod
     def parse_augmentations(augs: Iterable[Dict[str, Any]]):
         name_2_class = {"translation": TranslateCoords, "rotation": RotateCoords, "gamma": GammaShift}
         aug_instances = []
-        for n, params in augs:
+        for aug in augs:
+            n, params = list(aug.items())[0]
             try:
                 class_name = name_2_class[n]
             except KeyError:
@@ -114,8 +114,8 @@ class Seg3DCropped(AbstractDataset):
 class Seg3DCropped_SAX(Seg3DCropped):
     """ IF you want to make one for some other data modality,
     creating a similar class with your own find_images method """
-    def find_images(self):
-        return find_sax_ED_images(self.load_dir)
+    def find_images(self, **kwargs):
+        return find_sax_ED_images(self.load_dir, **kwargs)
 
 
 class Seg3DCropped_SAX_test(Seg3DCropped_SAX):
@@ -137,24 +137,12 @@ class Seg3DWholeImage(AbstractDataset):
         raw_seg_data = nii_seg.get_data()
 
         # Crop the image into a square based on which side is the longest
-        max_dim = np.argmax(raw_im_data.shape)
-        if max_dim == 0:
-            start_idx = (raw_im_data.shape[0] - raw_im_data.shape[1]) // 2
-            cropped_im = raw_im_data[start_idx: start_idx + raw_im_data.shape[1]]
-            cropped_seg = raw_seg_data[start_idx: start_idx + raw_seg_data.shape[1]]
-        elif max_dim == 1:
-            start_idx = (raw_im_data.shape[1] - raw_im_data.shape[0]) // 2
-            cropped_im = raw_im_data[:, start_idx: start_idx + raw_im_data.shape[0]]
-            cropped_seg = raw_seg_data[:, start_idx: start_idx + raw_seg_data.shape[0]]
-        else:
-            raise ValueError
-        assert cropped_im.shape[0] == cropped_im.shape[1]
-
-        min_, max_ = cropped_im.min(), cropped_im.max()
-        img = (cropped_im - min_) / (max_ - min_)
+        cropped_im, cropped_seg = square_image(raw_im_data, raw_seg_data)
+        # Normalize image to range [0, 1]
+        img = normalize_image(cropped_im)
         seg = cropped_seg
-        img = cv2.resize(img, self.out_shape[:2])
 
+        img = cv2.resize(img, self.out_shape[:2])
         seg = cv2.resize(seg, self.out_shape[:2], interpolation=cv2.INTER_NEAREST)
 
         x, y, z = torch.meshgrid(torch.arange(img.shape[0], dtype=torch.float32),
@@ -183,15 +171,13 @@ class Seg3DWholeImage(AbstractDataset):
 class Seg3DWholeImage_SAX(Seg3DWholeImage):
     """ IF you want to make one for some other data modality,
     creating a similar class with your own find_images method """
-    def find_images(self):
-        return find_sax_ED_images(self.load_dir)
+    def find_images(self, **kwargs):
+        return find_sax_ED_images(self.load_dir, **kwargs)
 
 
 class Seg3DWholeImage_SAX_test(Seg3DWholeImage_SAX):
-    def __init__(self, load_dir=UKBB_TEST_IMGS_DIR, indices=(0,), **kwargs):
+    def __init__(self, load_dir=UKBB_TEST_IMGS_DIR, **kwargs):
         super(Seg3DWholeImage_SAX, self).__init__(load_dir, **kwargs)
-        self.im_paths = [self.im_paths[i] for i in indices]
-
         self.do_augment = False
         self.sample_image = self.__getitem__(0)[1]
 
@@ -210,24 +196,12 @@ class Seg4DWholeImage(AbstractDataset):
         t = t / raw_shape[-1]
 
         # Crop the image into a square based on which side is the longest
-        max_dim = np.argmax(frame_im_data.shape[:2])
-        if max_dim == 0:
-            start_idx = (frame_im_data.shape[0] - frame_im_data.shape[1]) // 2
-            cropped_im = frame_im_data[start_idx: start_idx + frame_im_data.shape[1]]
-            cropped_seg = frame_seg_data[start_idx: start_idx + frame_seg_data.shape[1]]
-        elif max_dim == 1:
-            start_idx = (frame_im_data.shape[1] - frame_im_data.shape[0]) // 2
-            cropped_im = frame_im_data[:, start_idx: start_idx + frame_im_data.shape[0]]
-            cropped_seg = frame_seg_data[:, start_idx: start_idx + frame_seg_data.shape[0]]
-        else:
-            raise ValueError
-        assert cropped_im.shape[0] == cropped_im.shape[1]
-
-        min_, max_ = cropped_im.min(), cropped_im.max()
-        img = (cropped_im - min_) / (max_ - min_)
+        cropped_im, cropped_seg = square_image(frame_im_data, frame_seg_data)
+        # Normalize image to range [0, 1]
+        img = normalize_image(cropped_im)
         seg = cropped_seg
+
         img = cv2.resize(img, self.out_shape[:2])
-        # img = img[..., None]  # Image needs time dimension
         seg = cv2.resize(seg, self.out_shape[:2], interpolation=cv2.INTER_NEAREST)
 
         # torch.meshgrid has a different behaviour than np.meshgrid
@@ -258,14 +232,12 @@ class Seg4DWholeImage(AbstractDataset):
 class Seg4DWholeImage_SAX(Seg4DWholeImage):
     """ IF you want to make one for some other data modality,
     creating a similar class with your own find_images method """
-    def find_images(self):
-        return find_sax_images(self.load_dir)
+    def find_images(self, **kwargs):
+        return find_sax_images(self.load_dir, **kwargs)
 
 
 class Seg4DWholeImage_SAX_test(Seg4DWholeImage_SAX):
-    def __init__(self, load_dir=UKBB_TEST_IMGS_DIR, indices=(0,), **kwargs):
+    def __init__(self, load_dir=UKBB_TEST_IMGS_DIR, **kwargs):
         super(Seg4DWholeImage_SAX_test, self).__init__(load_dir, **kwargs)
-        self.im_paths = [self.im_paths[i] for i in indices]
-
         self.do_augment = False
         self.sample_image = self.__getitem__(0)[1]
