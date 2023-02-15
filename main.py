@@ -1,4 +1,4 @@
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, List
 from dataclasses import dataclass
 import os
 from datetime import datetime
@@ -12,8 +12,13 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 
 from model.models import ImplicitNetSegPrior, ImplicitNetSeparateSegPrior, ImplicitNetMountedSegPrior, \
-    ImplicitNetSeparateSegLatent
-from data_loading.data_loader import Seg4DWholeImage_SAX, Seg3DWholeImage_SAX
+    ImplicitNetSeparateSegLatent, ImplicitNetSegLatent, ImplicitNetMountedSegLatent
+from data_loading.data_loader import Seg4DWholeImage_SAX, Seg3DWholeImage_SAX, Seg4DWholeImage_SAX_test
+from utils import ValProgressBar
+
+LATEST_CHECKPOINT_DIR = "latest_checkpoint"
+BEST_WEIGHTS_PATH = "best_weights.pt"
+CONFIG_SAVE_PATH = "config.yaml"
 
 
 @dataclass
@@ -27,19 +32,19 @@ class Params:
     hidden_size: int = 128
     dropout: float = 0.00
     num_hidden_layers: int = 8
-    side_length: Tuple[int, int, Optional[int]] = (100, 100, -1, 1)
+    side_length: Tuple[int, ...] = (100, 100, -1, 1)
     heart_pad: int = 10
-    batch_size: int = 1
     max_epochs: int = 3001
-    train_log_interval: int = 1
-    val_max_epochs: int = 2001  # Lightning is faster doing (2000 epochs x 1 batch) than (1 epoch x 2000 batches)
+    log_interval: int = 1
     val_interval: int = 10
-    val_log_interval: int = 500
-    val_x_holdout_rate: int = 1  # Height
-    val_y_holdout_rate: int = 1  # Width
-    val_z_holdout_rate: int = 1  # Slices
-    val_t_holdout_rate: int = 3  # Time
-    seg_class_weights: Tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
+    fine_tune_max_epochs: int = 2001  # Lightning is faster doing (2000 epochs x 1 batch) than (1 epoch x 2000 batches)
+    fine_tune_optimal_epochs: int = -1  # To be set during training
+    fine_tune_log_interval: int = 500
+    x_holdout_rate: int = 1  # Height
+    y_holdout_rate: int = 1  # Width
+    z_holdout_rate: int = 1  # Slices
+    t_holdout_rate: int = 3  # Time
+    seg_class_weights: Tuple[float, ...] = (1.0, 1.0, 1.0, 1.0)
     lr: float = 1e-4
     fine_tune_lr: float = 1e-4
     latent_reg: float = 1e-4
@@ -53,79 +58,159 @@ class Params:
     #                                                          {"gamma", {"gamma_lim": (0.7, 1.4)}})
 
 
-def init_model(dataset, params, val_dataset):
-    coord_dimensions = dataset.sample_coords.shape[-1]
-    assert coord_dimensions == len(params.side_length)
-    if params.model_type == "separate":
-        model = ImplicitNetSeparateSegPrior(num_train_samples=len(dataset), val_dataset=val_dataset,
-                                            coord_dimensions=coord_dimensions,
-                                            aug_num_parameters=dataset.num_aug_params, **params.__dict__)
-    elif params.model_type == "shared":
+@dataclass
+class EvalParams:
+    side_length: Tuple[int, int, Optional[int]] = (100, 100, -1, 1)
+    heart_pad: int = 10
+    fine_tune_max_epochs: int = 3001  # Lightning is faster doing (2000 epochs x 1 batch) than (1 epoch x 2000 batches)
+    fine_tune_log_interval: int = 500
+    x_holdout_rate: int = 1  # Height
+    y_holdout_rate: int = 1  # Width
+    z_holdout_rate: int = 1  # Slices
+    t_holdout_rate: int = 1  # Time
+    fine_tune_lr: float = 1e-4
+    latent_reg: float = 1e-4
+    weight_reg: float = 1e-4
+    augmentations: Tuple[Tuple[str, Dict[str, Any]], ...] = ()
+
+
+def init_model(dataset, val_dataset, **params):
+    if params["model_type"] == "separate":
+        model = ImplicitNetSeparateSegPrior(
+            dataset=dataset,
+            val_dataset=val_dataset,
+            aug_num_parameters=dataset.num_aug_params,
+            **params)
+    elif params["model_type"] == "shared":
         model = ImplicitNetSegPrior(
-            **dict(num_train_samples=len(dataset), val_dataset=val_dataset, coord_dimensions=coord_dimensions,
-                   aug_num_parameters=dataset.num_aug_params, **params.__dict__))
-    elif params.model_type == "mounted":
-        model = ImplicitNetMountedSegPrior(num_train_samples=len(dataset), val_dataset=val_dataset,
-                                           coord_dimensions=coord_dimensions, aug_num_parameters=dataset.num_aug_params,
-                                           **params.__dict__)
+            dataset=dataset,
+            val_dataset=val_dataset,
+            aug_num_parameters=dataset.num_aug_params,
+            **params)
+    elif params["model_type"] == "mounted":
+        model = ImplicitNetMountedSegPrior(
+            dataset=dataset,
+            val_dataset=val_dataset,
+            aug_num_parameters=dataset.num_aug_params,
+            **params)
     else:
         raise NotImplementedError
     return model
 
 
 def main_train(config_path: Optional[str] = None, exp_name: Optional[str] = None):
-    config = {}
-    if config_path is not None:
-        with open(config_path, "r") as f:
-            config = yaml.safe_load(f)
-    params = Params(**config["params"])
-
-    # dataset = Seg3DWholeImage_SAX(**{"num_cases": config["num_train"], **params.__dict__})
-    dataset = Seg4DWholeImage_SAX(**{"num_cases": config.get("num_train", -1), **params.__dict__})
-    val_dataset = Seg4DWholeImage_SAX(**{"num_cases": config.get("num_val", -1), **params.__dict__})
-    model = init_model(dataset, params, val_dataset)
-    train_dataloader = DataLoader(dataset, batch_size=params.batch_size, shuffle=True)
-    root_dir = Path(r"C:\Users\nilst\Documents\Implicit_segmentation\logs") / "4d"
-    if exp_name is not None:
-        root_dir = root_dir / exp_name
-    root_dir = root_dir / f'{datetime.now().strftime("%Y%m%d-%H%M%S")}_{str(dataset.__class__.__name__)}'
-    print(root_dir)
-    os.makedirs(str(root_dir), exist_ok=True)
-    ckpt_saver = ModelCheckpoint(save_top_k=1, dirpath=root_dir / "checkpoint", monitor="step", mode="max")
-    trainer = pl.Trainer(max_epochs=params.max_epochs, log_every_n_steps=50, accelerator="gpu", default_root_dir=root_dir, callbacks=[ckpt_saver])
-    # sd = torch.load(r"C:\Users\nilst\Documents\Implicit_segmentation\logs\4d\NumLayers_8_hidSize_128_enc_none_modelType_shared\20230202-233548_Seg4DWholeImage_SAX\checkpoint\epoch=57-step=112056.ckpt")
-    # model.load_state_dict(sd["state_dict"])
-    # model = model.load_from_checkpoint(r"C:\Users\nilst\Documents\Implicit_segmentation\logs\4d\NumLayers_8_hidSize_128_enc_none_modelType_shared\20230202-233548_Seg4DWholeImage_SAX\checkpoint\epoch=57-step=112056.ckpt",
-    #                                    strict=True)
-    start = datetime.now()
-    trainer.fit(model, train_dataloaders=train_dataloader)
-    print("Train elapsed time:", datetime.now() - start)
-    return ""
-
-
-def main_eval(weights_path: str, config_path: Optional[str] = None):
-    raise NotImplementedError
+    # Config and hyper params
     config = {"params": {}}
     if config_path is not None:
         with open(config_path, "r") as f:
             config = yaml.safe_load(f)
     params = Params(**config["params"])
-    dataset = Seg4DWholeImage_SAX(**{"num_cases": config.get("num_test", -1), **params.__dict__})
+    root_dir = Path(config["log_dir"])
 
-    if params.model_type == "separate":
-        model = ImplicitNetSeparateSegLatent(dataset=dataset, **params.__dict__)
-    elif params.model_type == "shared":
-        model = ImplicitNetSegPrior(dataset=dataset, **params.__dict__)
-    elif params.model_type == "mounted":
-        model = ImplicitNetMountedSegPrior(dataset=dataset, **params.__dict__)
+    # Dataset
+    dataset = Seg4DWholeImage_SAX(load_dir=config["train_data_dir"],
+                                  num_cases=config.get("num_train", -1),
+                                  **params.__dict__)
+    coord_dimensions = dataset.sample_coords.shape[-1]
+    assert coord_dimensions == len(params.side_length)
+    train_dataloader = DataLoader(dataset, shuffle=True)
+
+    val_dataset = Seg4DWholeImage_SAX_test(load_dir=config["val_data_dir"],
+                                           num_cases=config.get("num_val", -1),
+                                           **params.__dict__)
+    # Model dir creation
+    if exp_name is not None:
+        root_dir = root_dir / exp_name
+    root_dir = root_dir / f'{datetime.now().strftime("%Y%m%d-%H%M%S")}_{str(dataset.__class__.__name__)}'
+    os.makedirs(str(root_dir), exist_ok=True)
+    print(root_dir)
+
+    # Save config to model dir
+    config["params"] = {k: v if not isinstance(v, tuple) else list(v) for k, v in params.__dict__.items()}
+    with open(str(root_dir / CONFIG_SAVE_PATH), "w") as f:
+        yaml.dump(config, f)
+
+    # Model
+    best_weights_path = root_dir / BEST_WEIGHTS_PATH
+    model = init_model(dataset, val_dataset, best_checkpoint_path=best_weights_path, **params.__dict__)
+    ckpt_latest_saver = ModelCheckpoint(save_top_k=1, dirpath=root_dir / LATEST_CHECKPOINT_DIR,
+                                        monitor="step", mode="max")
+    # Trainer
+    trainer = pl.Trainer(max_epochs=params.max_epochs, accelerator="gpu",
+                         default_root_dir=root_dir, callbacks=[ckpt_latest_saver])
+    start = datetime.now()
+    trainer.fit(model, train_dataloaders=train_dataloader)
+    print("Train elapsed time:", datetime.now() - start)
+
+    # Save updated config to model dir
+    params.fine_tune_optimal_epochs = model.overall_best_num_fine_tune_epochs
+    config["params"] = {k: v if not isinstance(v, tuple) else list(v) for k, v in params.__dict__.items()}
+    with open(str(root_dir / CONFIG_SAVE_PATH), "w") as f:
+        yaml.dump(config, f)
+    return best_weights_path
+
+
+def main_eval(weights_path: str, config_path: Optional[str] = None):
+
+    source_dir = Path(weights_path).parent
+
+    # Load original model's config
+    source_config_path = source_dir / CONFIG_SAVE_PATH
+    source_config = {"params": {}}
+    if source_config_path.exists():
+        with open(str(source_config_path), "r") as f:
+            source_config = yaml.safe_load(f)
+
+    # Load user defined config
+    if config_path is not None and Path(config_path).exists():
+        with open(config_path, "r") as f:
+            config = yaml.safe_load(f)
+
+    # Merged user defined config with original model config
+    merged_params = {**source_config["params"], **config["params"]}  # User defined config takes precedence
+    params = Params(**merged_params)
+    params = params.__dict__
+
+    if "log_dir" in config:
+        # If user defined a log_dir use that one
+        log_dir = config["log_dir"]
+    else:
+        # Otherwise defined log_dir beside original model's dir
+        log_dir = str(source_dir.parent)
+    root_dir = Path(log_dir) / (str(source_dir.name) + f'_test_{datetime.now().strftime("%Y%m%d-%H%M%S")}')
+    os.makedirs(str(root_dir), exist_ok=True)
+    print(root_dir)
+
+    # Define dataset and model
+    dataset = Seg4DWholeImage_SAX_test(load_dir=config["test_data_dir"],
+                                       num_cases=config.get("num_test", -1),
+                                       **params)
+    if params["model_type"] == "separate":
+        model = ImplicitNetSeparateSegLatent(dataset=dataset, split_name="test", **params)
+    elif params["model_type"] == "shared":
+        model = ImplicitNetSegLatent(dataset=dataset, split_name="test", **params)
+    elif params["model_type"] == "mounted":
+        model = ImplicitNetMountedSegLatent(dataset=dataset, split_name="test", **params)
     else:
         raise ValueError("Unknown model type.")
-    sd = torch.load(r"C:\Users\nilst\Documents\Implicit_segmentation\logs\4d\NumLayers_8_hidSize_128_enc_none_modelType_shared\20230202-233548_Seg4DWholeImage_SAX\checkpoint\epoch=57-step=112056.ckpt")
-    del sd["h"]
-    a = model.load_state_dict(sd["state_dict"])
-    pass
-    # model = model.load_from_checkpoint(weights_path, strict=True)
 
+    # Load trained model's weights
+    sd = torch.load(weights_path)
+    del sd["h"]
+    a = model.load_state_dict(sd, strict=False)
+    assert len(a.missing_keys) == 1 and a.missing_keys[0] == 'h'
+    assert len(a.unexpected_keys) == 0
+    # Fine tune model
+    if params["fine_tune_optimal_epochs"] > 0:
+        max_epochs = params["fine_tune_optimal_epochs"]
+    else:
+        max_epochs = params["fine_tune_max_epochs"]
+    trainer = pl.Trainer(max_epochs=max_epochs,
+                         accelerator="gpu",
+                         default_root_dir=root_dir,
+                         enable_model_summary=False,
+                         enable_checkpointing=False, callbacks=[ValProgressBar()])
+    trainer.fit(model, train_dataloaders=DataLoader(dataset, shuffle=False))
 
 
 def parse_command_line():
@@ -157,8 +242,8 @@ if __name__ == '__main__':
     args = parse_command_line()
     if args.pipeline is None or args.pipeline == "train":
         config_path, exp_name = args.config, args.exp_name
-        weights_path = main_train(config_path, exp_name)
-        main_eval(weights_path)
+        weights_path, fine_tune_epochs = main_train(config_path, exp_name)
+        main_eval(weights_path, config_path)
     elif args.pipeline == "eval":
         config_path, weights_path = args.config, args.weights
         main_eval(weights_path, config_path)

@@ -1,12 +1,13 @@
-train_data_dir: r"D:\data"
-num_train: 1000
-val_data_dir: r"C:\Users\nilst\Documents\Implicit_segmentation\data\ukbb_test"
-num_val: 3
-test_data_dir: r"C:\Users\nilst\Documents\Implicit_segmentation\data\ukbb_test"
-num_test: 5
+train_data_dir: D:\data
+num_train: -1
+val_data_dir: C:\Users\nilst\Documents\Implicit_segmentation\data\ukbb_val
+num_val: 5
+test_data_dir: C:\Users\nilst\Documents\Implicit_segmentation\data\ukbb_test
+num_test: 6
+log_dir: C:\Users\nilst\Documents\Implicit_segmentation\logs\4d
 
 params:
-    initial_val: True
+    initial_val: False
     pos_encoding: "none"  # nerf, none, gaussian
 #    num_frequencies: (128,)
     freq_scale: 1.0
@@ -15,29 +16,27 @@ params:
     dropout: 0.00
     num_hidden_layers: 8
     side_length: [100, 100, -1, 1]
-    heart_pad: 10
-    batch_size: 1
-    max_epochs: 3001
-    train_log_interval: 1
-    val_max_epochs: 21  # Lightning is faster doing (2000 epochs x 1 batch) than (1 epoch x 2000 batches)
+    max_epochs: 201
+    log_interval: 1
     val_interval: 10
-    val_log_interval: 5
-    val_x_holdout_rate: 1  # Height
-    val_y_holdout_rate: 1  # Width
-    val_z_holdout_rate: 1  # Slices
-    val_t_holdout_rate: 3  # Time
+    fine_tune_max_epochs: 2001  # Lightning is faster doing (2000 epochs x 1 batch) than (1 epoch x 2000 batches)
+    fine_tune_log_interval: 500
+    x_holdout_rate: 1  # Height
+    y_holdout_rate: 1  # Width
+    z_holdout_rate: 1  # Slices
+    t_holdout_rate: 1  # Time
     seg_class_weights: [1.0, 1.0, 1.0, 1.0]
-    lr: 0.0001
-    fine_tune_lr: 1e-4
+    lr: 1e-3
+    fine_tune_lr: 1e-3
     latent_reg: 1e-4
     weight_reg: 1e-4
     activation: "wire"  # periodic, relu, wire
     skip_connections: True
     input_coord_to_all_layers: False
     model_type: "shared"  # shared, separate, mounted
-    augmentations:
-        - translation:
-            x_lim: 0.25
-            y_lim: 0.25
-        - gamma:
-            gamma_lim: [0.7, 1.4]
+#    augmentations:
+#        - translation:
+#            x_lim: 0.25
+#            y_lim: 0.25
+#        - gamma:
+#            gamma_lim: [0.7, 1.4]

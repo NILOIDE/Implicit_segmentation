@@ -1,0 +1,15 @@
+test_data_dir: C:\Users\nilst\Documents\Implicit_segmentation\data\ukbb_test
+num_test: 5
+log_dir: C:\Users\nilst\Documents\Implicit_segmentation\logs\test
+
+params:
+    side_length: [50, 50, -1, 1]
+#    fine_tune_max_epochs: 201  # Lightning is faster doing (2000 epochs x 1 batch) than (1 epoch x 2000 batches)
+    fine_tune_log_interval: 500
+    x_holdout_rate: 1  # Height
+    y_holdout_rate: 1  # Width
+    z_holdout_rate: 1  # Slices
+    t_holdout_rate: 1  # Time
+    fine_tune_lr: 1e-3
+    latent_reg: 1e-4
+    weight_reg: 1e-4

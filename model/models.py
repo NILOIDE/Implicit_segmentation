@@ -4,7 +4,7 @@ from copy import deepcopy
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
-from typing import Tuple, Any, Dict, Optional
+from typing import Tuple, Any, Dict, Optional, List, Union
 import numpy as np
 import pytorch_lightning as pl
 from monai.losses import DiceLoss
@@ -30,17 +30,17 @@ import os
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 
 from data_loading.data_loader import AbstractDataset
-from model.activation_functions import Sine, WIRE
+from model.activation_functions import Sine, WIRE, Relu
 from model.mlp import MLP, ResMLP, ResMLPHiddenCoords, MLPHiddenCoords, ReconstructionHead, SegmentationHead
 from model.pos_encoding import PosEncodingNeRFOptimized, PosEncodingGaussian, PosEncodingNone
 from utils import ValProgressBar, draw_mask_to_image, to_1hot, square_image, normalize_image
 
 
-def process_params(params: Dict[str, Any]):
+def process_params(**params: Dict[str, Any]):
     if params["activation"] == "periodic":
         activation = Sine
     elif params["activation"] == "relu":
-        activation = nn.ReLU
+        activation = Relu
     elif params["activation"] == "wire":
         activation = WIRE
     else:
@@ -69,57 +69,47 @@ def process_params(params: Dict[str, Any]):
     return activation, pos_encoding, model
 
 
-class AbstractPrior(pl.LightningModule):
-    def __init__(self, *args, val_dataset=None, aug_num_parameters: int = 0, **kwargs):
-        super(AbstractPrior, self).__init__()
-        self.save_hyperparameters(kwargs)
-        self.activation_class, self.pos_encoding_class, self.backbone_class = process_params(kwargs)
+class Abstract(pl.LightningModule):
+    def __init__(self, *args, aug_num_parameters: int = 0, split_name="", **kwargs):
+        super(Abstract, self).__init__()
+        self.split_name = split_name
         self.latent_size = kwargs.get("latent_size")
         self.lr = float(kwargs.get("lr"))
-        self.num_train_samples = kwargs.get("num_train_samples")
-        self.num_coord_dims = kwargs.get("coord_dimensions")
-        self.side_length = kwargs.get("side_length")
-        self.h = nn.Parameter(torch.normal(0., 0.1**2, (self.num_train_samples, self.latent_size - aug_num_parameters,)), requires_grad=True)
+        self.max_epochs = kwargs.get("max_epochs")
 
-        self.latent_reg = float(kwargs.get("latent_reg"))
-        self.weight_reg = float(kwargs.get("weight_reg"))
+        self.dataset = kwargs.get("dataset")
+        self.num_train_samples = 1
+        self.num_coord_dims = kwargs.get("coord_dimensions")
+        if self.dataset is not None:
+            self.num_train_samples = len(self.dataset)
+            self.num_coord_dims = self.dataset.sample_coords.shape[-1]
+        if "coord_dimensions" not in kwargs:
+            kwargs["num_coord_dims"] = self.num_coord_dims
+        self.activation_class, self.pos_encoding_class, self.backbone_class = process_params(**kwargs)
+        self.side_length = kwargs.get("side_length")
+        self.h_init_std = kwargs.get("h_init_std", 0.1**4)
+        self.h = nn.Parameter(torch.normal(0., self.h_init_std,
+                                           (self.num_train_samples, self.latent_size - aug_num_parameters,)),
+                              requires_grad=True)
+        self.num_classes = 4
+        self.pos_enc = self.pos_encoding_class(**kwargs)
+
+        self.latent_reg = float(kwargs.get("latent_reg", 0.0))
+        self.weight_reg = float(kwargs.get("weight_reg", 0.0))
         self.backbone_reg = self.weight_reg > 0.0
+
+        self.x_holdout_rate = kwargs.get("x_holdout_rate", 1)
+        self.y_holdout_rate = kwargs.get("y_holdout_rate", 1)
+        self.z_holdout_rate = kwargs.get("z_holdout_rate", 1)
+        self.t_holdout_rate = kwargs.get("t_holdout_rate", 1)
 
         self.mse_loss = nn.MSELoss(reduction="none")
         self.bce_loss = nn.BCELoss(reduction="none")
         self.l2_loss = nn.MSELoss()
-        self.dice_loss = None
-        self.seg_class_weights = None
-
-        self.val_dataset: AbstractDataset = val_dataset
-        self.initial_val = kwargs.get("initial_val", False)
-        self.train_log_interval = kwargs.get("train_log_interval")
-        self.val_epochs = kwargs.get("val_max_epochs")
-        self.val_interval = kwargs.get("val_interval")
         self.params = kwargs
-        self.split_name = 'train'
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.lr)
-
-    def get_progress_bar_dict(self):
-        """ Remove 'v_num' from progress bar """
-        tqdm_dict = super().get_progress_bar_dict()
-        if 'v_num' in tqdm_dict:
-            del tqdm_dict['v_num']
-        return tqdm_dict
-
-    def get_normalized_dist_map(self, mask, dist_cutoff=.5):
-        """
-        :param mask: Background mask (background = 1, foreground = 0)
-        :param dist_cutoff: Proportion in terms of image height that will be used as cutoff distance (clip
-        # """
-        # TODO fix edge slices
-        dist_map = distance_transform_edt((mask==0).cpu().numpy())
-        dist_map = torch.tensor(dist_map, dtype=torch.float32, device=mask.device)
-        dist_map = dist_map / (dist_cutoff * mask.shape[1])
-        dist_map = dist_map.clip(min=0.01)
-        return dist_map
 
     def reconstruction_criterion(self, pred_im, gt_im, background_mask=None, log=True):
         loss = self.bce_loss(pred_im, gt_im)
@@ -127,7 +117,7 @@ class AbstractPrior(pl.LightningModule):
             loss = loss * self.get_normalized_dist_map(background_mask)
         loss = loss.mean()
         if log:
-            self.log(f"{self.split_name}/pixel_L2", loss.item(), prog_bar=True)
+            self.log(f"{self.split_name}/pixel_bce", loss.item(), prog_bar=True)
         return loss
 
     def regularization_criterion(self, h, log=True):
@@ -151,37 +141,87 @@ class AbstractPrior(pl.LightningModule):
         loss_seg_dice_weighted = (loss_seg_dice * self.seg_class_weights).mean()
 
         if log:
-            self.log(f"{self.split_name}/seg_bce_loss", loss_seg_bce.mean().item())
-            self.log(f"{self.split_name}/seg_dice_loss", loss_seg_dice.mean().item())
+            self.log(f"{self.split_name}/bce_loss", loss_seg_bce.mean().item())
+            self.log(f"{self.split_name}/dice_loss", loss_seg_dice.mean().item())
 
             with torch.no_grad():
                 dice = 1 - self.dice_loss(pred_seg.round(), gt_seg_1hot).mean(non_class_dims)
                 dice = dice.cpu().tolist()
-            self.log(f"{self.split_name}/seg_dice_BG", dice[0], prog_bar=True)
-            self.log(f"{self.split_name}/seg_dice_LV_Pool", dice[1], prog_bar=True)
-            self.log(f"{self.split_name}/seg_dice_LV_Myo", dice[2], prog_bar=True)
-            self.log(f"{self.split_name}/seg_dice_RV_Pool", dice[3], prog_bar=True)
+            self.log(f"{self.split_name}/dice_BG", dice[0], prog_bar=True)
+            self.log(f"{self.split_name}/dice_LV_Pool", dice[1], prog_bar=True)
+            self.log(f"{self.split_name}/dice_LV_Myo", dice[2], prog_bar=True)
+            self.log(f"{self.split_name}/dice_RV_Pool", dice[3], prog_bar=True)
 
         return loss_seg_dice_weighted + loss_seg_bce_weighted
+
+
+class AbstractPrior(Abstract):
+    def __init__(self, *args, val_dataset=None, **kwargs):
+        kwargs = deepcopy(kwargs)
+        kwargs["split_name"] = kwargs.get("split_name", "train")
+        super(AbstractPrior, self).__init__(*args, **kwargs)
+        self.save_hyperparameters(kwargs)
+
+        self.dice_loss = DiceLoss(reduction="none")
+        self.seg_class_weights = torch.tensor(kwargs.get("seg_class_weights"), dtype=torch.float32, device="cuda")
+
+        self.val_dataset: AbstractDataset = val_dataset
+        self.initial_val = kwargs.get("initial_val", False)
+        self.log_interval = kwargs.get("log_interval")
+        self.val_max_epochs = kwargs.get("fine_tune_max_epochs")
+        self.val_interval = kwargs.get("val_interval")
+
+        self.overall_best_score = 0
+        self.overall_best_num_fine_tune_epochs = 0
+        self.best_checkpoint_path = kwargs.get("best_checkpoint_path")
+
+    def get_progress_bar_dict(self):
+        """ Remove 'v_num' from progress bar """
+        tqdm_dict = super().get_progress_bar_dict()
+        if 'v_num' in tqdm_dict:
+            del tqdm_dict['v_num']
+        return tqdm_dict
+
+    def get_normalized_dist_map(self, mask, dist_cutoff=.5):
+        """
+        :param mask: Background mask (background = 1, foreground = 0)
+        :param dist_cutoff: Proportion in terms of image height that will be used as cutoff distance (clip
+        # """
+        # TODO fix edge slices
+        dist_map = distance_transform_edt((mask==0).cpu().numpy())
+        dist_map = torch.tensor(dist_map, dtype=torch.float32, device=mask.device)
+        dist_map = dist_map / (dist_cutoff * mask.shape[1])
+        dist_map = dist_map.clip(min=0.01)
+        return dist_map
 
     def do_validation(self, epoch):
         self.eval()
         params = deepcopy(self.params)
-        if "dropout" in params:
-            params["dropout"] = 0.0
+        params["dataset"] = self.val_dataset
+        params["dropout"] = 0.0
         val_model = self.val_model_class(parent_logger=self.logger,
                                          train_epoch=epoch,
-                                         dataset=self.val_dataset,
                                          **params)
         state_dict = deepcopy(self.state_dict())
         del state_dict['h']
         miss_keys = val_model.load_state_dict(state_dict, strict=False)
         assert 'h' in miss_keys.missing_keys and len(miss_keys.missing_keys) == 1
-        val_model.h = nn.Parameter(torch.normal(0., 1e-4 ** 2, val_model.h.shape))
-        val_trainer = pl.Trainer(max_epochs=self.val_epochs, accelerator="gpu",
+        val_trainer = pl.Trainer(max_epochs=self.val_max_epochs, accelerator="gpu",
                                  enable_model_summary=False, logger=False,
                                  enable_checkpointing=False, callbacks=[ValProgressBar()])
         val_trainer.fit(val_model, train_dataloaders=DataLoader(self.val_dataset, batch_size=1, shuffle=False))
+        scores_per_epoch = [float(np.mean(val_model.history_dice_LV_Pool[i])) +
+                            float(np.mean(val_model.history_dice_LV_Myo[i])) +
+                            float(np.mean(val_model.history_dice_RV_Pool[i]))
+                            for i in range(len(val_model.history_dice_LV_Pool))]
+        best_num_fine_tune_epochs = int(np.argmax(scores_per_epoch))
+        best_score = scores_per_epoch[best_num_fine_tune_epochs]
+        self.log(f"val_best_score", best_score, prog_bar=True)
+        self.log(f"val_best_num_fine_tune_epochs", float(best_num_fine_tune_epochs), prog_bar=True)
+        if best_score > self.overall_best_score:
+            self.overall_best_score = best_score
+            self.overall_best_num_fine_tune_epochs = best_num_fine_tune_epochs
+            torch.save(self.state_dict(), self.best_checkpoint_path)
         del val_trainer, val_model
         self.train()
 
@@ -194,111 +234,144 @@ class AbstractPrior(pl.LightningModule):
             self.do_validation(self.current_epoch + 1)
 
 
-class AbstractLatent(pl.LightningModule):
-    def __init__(self, parent_logger=None, train_epoch=None, dataset: AbstractDataset = None, *args, **kwargs):
+class AbstractLatent(Abstract):
+    def __init__(self, parent_logger=None, train_epoch=None, *args, **kwargs):
+        kwargs = deepcopy(kwargs)
+        kwargs["split_name"] = kwargs.get("split_name", "val")
+        kwargs["lr"] = kwargs.get("fine_tune_lr")
+        kwargs["log_interval"] = kwargs.get("fine_tune_log_interval")
+        if kwargs["fine_tune_optimal_epochs"] > 0:
+            kwargs["max_epochs"] = kwargs["fine_tune_optimal_epochs"]
+        else:
+            kwargs["max_epochs"] = kwargs["fine_tune_max_epochs"]
         super(AbstractLatent, self).__init__(*args, **kwargs)
-        self.num_coord_dims = kwargs.get("coord_dimensions")
-        self.max_epochs = kwargs.get("val_max_epochs")
-        self.num_samples = len(dataset)
-        self.lr = float(kwargs.get("fine_tune_lr"))
-        self.h = nn.Parameter(torch.normal(0., 1e-4**2, (self.num_samples, self.latent_size)), requires_grad=True)
         self.parent_logger = parent_logger
         self.train_epoch = train_epoch
-        self.split_name = 'val'
-        self.z_holdout_rate = kwargs.get("val_z_holdout_rate", 1)
-        self.t_holdout_rate = kwargs.get("val_t_holdout_rate", 1)
-        self.dataset = dataset
 
-        self.train_loss = {}
-        self.train_pixel_loss = {}
-        self.train_seg_loss = {}
-        self.train_reg_loss = {}
-        self.dice_BG = {}
-        self.dice_LV_Pool = {}
-        self.dice_LV_Myo = {}
-        self.dice_RV_Pool = {}
-
-    def configure_optimizers(self):
-        return torch.optim.Adam([self.h], lr=self.lr)
+        self.history_loss = {i: [] for i in range(self.max_epochs)}
+        self.history_pixel_loss = {i: [] for i in range(self.max_epochs)}
+        self.history_seg_loss = {i: [] for i in range(self.max_epochs)}
+        self.history_reg_loss = {i: [] for i in range(self.max_epochs)}
+        self.history_dice_BG = {i: [] for i in range(self.max_epochs)}
+        self.history_dice_LV_Pool = {i: [] for i in range(self.max_epochs)}
+        self.history_dice_LV_Myo = {i: [] for i in range(self.max_epochs)}
+        self.history_dice_RV_Pool = {i: [] for i in range(self.max_epochs)}
 
     def on_fit_start(self):
         return
 
     def on_train_epoch_end(self):
-        if self.parent_logger is not None and self.current_epoch % self.val_log_interval == 0:
+        logger = self.parent_logger if self.parent_logger is not None else self.logger
+        if self.current_epoch % self.log_interval == 0:
             # Logged to training trainer's logger
-            if self.current_epoch in self.train_loss:
-                self.parent_logger.experiment.add_scalar(f"val_pixel_L2/{self.current_epoch}",
-                                                         np.mean(self.train_loss[self.current_epoch]),
-                                                         global_step=self.train_epoch)
-            if self.current_epoch in self.train_pixel_loss is not None:
-                self.parent_logger.experiment.add_scalar(f"val_pixel_L2/{self.current_epoch}",
-                                                         np.mean(self.train_pixel_loss[self.current_epoch]),
-                                                         global_step=self.train_epoch)
-            if self.current_epoch in self.train_seg_loss is not None:
-                self.parent_logger.experiment.add_scalar(f"val_seg_loss/{self.current_epoch}",
-                                                         np.mean(self.train_seg_loss[self.current_epoch]),
-                                                         global_step=self.train_epoch)
-            if self.current_epoch in self.loss_reg is not None:
-                self.parent_logger.experiment.add_scalar(f"val_reg_L2/{self.current_epoch}",
-                                                         np.mean(self.train_reg_loss[self.current_epoch]),
-                                                         global_step=self.train_epoch)
-            if self.current_epoch in self.dice_BG is not None:
-                self.parent_logger.experiment.add_scalar(f"val_dice_BG/{self.current_epoch}",
-                                                         np.mean(self.dice_BG[self.current_epoch]),
-                                                         global_step=self.train_epoch)
-            if self.current_epoch in self.dice_LV_Pool is not None:
-                self.parent_logger.experiment.add_scalar(f"val_dice_LV_Pool/{self.current_epoch}",
-                                                         np.mean(self.dice_LV_Pool[self.current_epoch]),
-                                                         global_step=self.train_epoch)
-            if self.current_epoch in self.dice_LV_Myo is not None:
-                self.parent_logger.experiment.add_scalar(f"val_dice_LV_Myo/{self.current_epoch}",
-                                                         np.mean(self.dice_LV_Myo[self.current_epoch]),
-                                                         global_step=self.train_epoch)
-            if self.current_epoch in self.dice_RV_Pool is not None:
-                self.parent_logger.experiment.add_scalar(f"val_dice_RV_Pool/{self.current_epoch}",
-                                                         np.mean(self.dice_RV_Pool[self.current_epoch]),
-                                                         global_step=self.train_epoch)
+            if self.current_epoch in self.history_loss and self.history_loss[self.current_epoch]:
+                logger.experiment.add_scalar(f"{self.split_name}_loss/{self.current_epoch}",
+                                             np.mean(self.history_loss[self.current_epoch]),
+                                             global_step=self.train_epoch)
+            if self.current_epoch in self.history_pixel_loss and self.history_pixel_loss[self.current_epoch]:
+                logger.experiment.add_scalar(f"{self.split_name}_pixel_loss/{self.current_epoch}",
+                                             np.mean(self.history_pixel_loss[self.current_epoch]),
+                                             global_step=self.train_epoch)
+            if self.current_epoch in self.history_seg_loss and self.history_seg_loss[self.current_epoch]:
+                logger.experiment.add_scalar(f"{self.split_name}_seg_loss/{self.current_epoch}",
+                                             np.mean(self.history_seg_loss[self.current_epoch]),
+                                             global_step=self.train_epoch)
+            if self.current_epoch in self.history_reg_loss and self.history_reg_loss[self.current_epoch]:
+                logger.experiment.add_scalar(f"{self.split_name}_reg_L2/{self.current_epoch}",
+                                             np.mean(self.history_reg_loss[self.current_epoch]),
+                                             global_step=self.train_epoch)
+            if self.current_epoch in self.history_dice_BG and self.history_dice_BG[self.current_epoch]:
+                logger.experiment.add_scalar(f"{self.split_name}_dice_BG/{self.current_epoch}",
+                                             np.mean(self.history_dice_BG[self.current_epoch]),
+                                             global_step=self.train_epoch)
+            if self.current_epoch in self.history_dice_LV_Pool and self.history_dice_LV_Pool[self.current_epoch]:
+                logger.experiment.add_scalar(f"{self.split_name}_dice_LV_Pool/{self.current_epoch}",
+                                             np.mean(self.history_dice_LV_Pool[self.current_epoch]),
+                                             global_step=self.train_epoch)
+            if self.current_epoch in self.history_dice_LV_Myo and self.history_dice_LV_Myo[self.current_epoch]:
+                logger.experiment.add_scalar(f"{self.split_name}_dice_LV_Myo/{self.current_epoch}",
+                                             np.mean(self.history_dice_LV_Myo[self.current_epoch]),
+                                             global_step=self.train_epoch)
+            if self.current_epoch in self.history_dice_RV_Pool and self.history_dice_RV_Pool[self.current_epoch]:
+                logger.experiment.add_scalar(f"{self.split_name}_dice_RV_Pool/{self.current_epoch}",
+                                             np.mean(self.history_dice_RV_Pool[self.current_epoch]),
+                                             global_step=self.train_epoch)
 
             # Draw images and save them to logger
             for sample_idx in range(len(self.dataset)):
                 im = self.draw_image(sample_idx)
-                self.parent_logger.experiment.add_image(f"val_images_{self.current_epoch}",
-                                                        im,
-                                                        global_step=self.train_epoch)
+                logger.experiment.add_image(f"{self.split_name}_images_{self.current_epoch}",
+                                            im,
+                                            global_step=self.train_epoch)
 
     def on_fit_end(self):
-        if self.parent_logger is not None:
-            self.draw_fit_plot()
+        logger = self.parent_logger if self.parent_logger is not None else self.logger
+        fig = self.draw_fit_plot(
+            pixel_loss=[float(np.mean(self.history_pixel_loss[i])) for i in range(len(self.history_pixel_loss))],
+            dice_BG=[float(np.mean(self.history_dice_BG[i])) for i in range(len(self.history_dice_BG))],
+            dice_LV_Pool=[float(np.mean(self.history_dice_LV_Pool[i])) for i in range(len(self.history_dice_LV_Pool))],
+            dice_LV_Myo=[float(np.mean(self.history_dice_LV_Myo[i])) for i in range(len(self.history_dice_LV_Myo))],
+            dice_RV_Pool=[float(np.mean(self.history_dice_RV_Pool[i])) for i in range(len(self.history_dice_RV_Pool))],
+            reg_loss=[float(np.mean(self.history_reg_loss[i])) for i in range(len(self.history_reg_loss))],
+            title_prefix="Average ")
+        logger.experiment.add_figure(f"{self.split_name}_loss_curve_average", fig, global_step=self.train_epoch)
+        del fig
+
+        if self.split_name == "test":
+            for i in range(len(self.history_dice_BG[0])):
+                fig = self.draw_fit_plot(
+                    pixel_loss=[self.history_pixel_loss[t][i] for t in range(len(self.history_pixel_loss))],
+                    dice_BG=[self.history_dice_BG[t][i] for t in range(len(self.history_dice_BG))],
+                    dice_LV_Pool=[self.history_dice_LV_Pool[t][i] for t in range(len(self.history_dice_LV_Pool))],
+                    dice_LV_Myo=[self.history_dice_LV_Myo[t][i] for t in range(len(self.history_dice_LV_Myo))],
+                    dice_RV_Pool=[self.history_dice_RV_Pool[t][i] for t in range(len(self.history_dice_RV_Pool))],
+                    reg_loss=[self.history_reg_loss[t][i] for t in range(len(self.history_reg_loss))],
+                    title_prefix=f"Sample {i}'s ")
+                logger.experiment.add_figure(f"{self.split_name}_loss_curve_sample_{i}", fig, global_step=self.train_epoch)
+                if self.num_coord_dims == 4 and self.dataset is not None:
+                    vid = self.draw_time_video(self.dataset.im_paths[i], self.dataset.seg_paths[i])
+                    logger.experiment.add_video(f"{self.split_name}_end_video_sample_{i}", vid[None], fps=10, global_step=self.train_epoch)
+                    del vid
+
+        else:
             if self.num_coord_dims == 4 and self.dataset is not None:
                 vid = self.draw_time_video(self.dataset.im_paths[0], self.dataset.seg_paths[0])
-                self.parent_logger.experiment.add_video(f"val_end_video", vid[None], fps=10, global_step=self.train_epoch)
+                logger.experiment.add_video(f"{self.split_name}_end_video", vid[None], fps=10,
+                                            global_step=self.train_epoch)
+                del vid
 
-    def val_logging(self,
-                    loss_pixel: Optional[float] = None,
-                    loss_seg: Optional[float] = None,
-                    dice_BG: Optional[float] = None,
-                    dice_LV_Pool: Optional[float] = None,
-                    dice_LV_Myo: Optional[float] = None,
-                    dice_RV_Pool: Optional[float] = None,
-                    loss_reg: Optional[float] = None,
-                    **kwargs):
+    def do_logging(self,
+                   loss_pixel: Optional[float] = None,
+                   loss_seg: Optional[float] = None,
+                   dice_BG: Optional[float] = None,
+                   dice_LV_Pool: Optional[float] = None,
+                   dice_LV_Myo: Optional[float] = None,
+                   dice_RV_Pool: Optional[float] = None,
+                   loss_reg: Optional[float] = None,
+                   **kwargs):
 
         # Logged only to progress bar
         if loss_pixel is not None:
-            self.log(f"val_pixel_L2", loss_pixel, prog_bar=True, on_step=True)
+            self.log(f"{self.split_name}_pixel_L2", loss_pixel, prog_bar=True, on_step=True)
+            self.history_pixel_loss[self.current_epoch].append(loss_pixel)
         if loss_seg is not None:
-            self.log(f"val_seg_loss", loss_seg, prog_bar=True, on_step=True)
+            self.log(f"{self.split_name}_seg_loss", loss_seg, prog_bar=True, on_step=True)
+            self.history_seg_loss[self.current_epoch].append(loss_seg)
         if loss_reg is not None:
-            self.log(f"val_reg_loss", loss_reg, prog_bar=True, on_step=True)
+            self.log(f"{self.split_name}_reg_loss", loss_reg, prog_bar=True, on_step=True)
+            self.history_reg_loss[self.current_epoch].append(loss_reg)
         if dice_BG is not None:
-            self.log(f"val_dice_BG", dice_BG, prog_bar=True, on_step=True)
+            self.log(f"{self.split_name}_dice_BG", dice_BG, prog_bar=True, on_step=True)
+            self.history_dice_BG[self.current_epoch].append(dice_BG)
         if dice_LV_Pool is not None:
-            self.log(f"val_dice_LV_Pool", dice_LV_Pool, prog_bar=True, on_step=True)
+            self.log(f"{self.split_name}_dice_LV_Pool", dice_LV_Pool, prog_bar=True, on_step=True)
+            self.history_dice_LV_Pool[self.current_epoch].append(dice_LV_Pool)
         if dice_LV_Myo is not None:
-            self.log(f"val_dice_LV_Myo", dice_LV_Myo, prog_bar=True, on_step=True)
+            self.log(f"{self.split_name}_dice_LV_Myo", dice_LV_Myo, prog_bar=True, on_step=True)
+            self.history_dice_LV_Myo[self.current_epoch].append(dice_LV_Myo)
         if dice_RV_Pool is not None:
-            self.log(f"val_dice_RV_Pool", dice_RV_Pool, prog_bar=True, on_step=True)
+            self.log(f"{self.split_name}_dice_RV_Pool", dice_RV_Pool, prog_bar=True, on_step=True)
+            self.history_dice_RV_Pool[self.current_epoch].append(dice_RV_Pool)
 
     def draw_image(self, sample_idx):
         t = 0  # ED frame is t index 0
@@ -335,27 +408,34 @@ class AbstractLatent(pl.LightningModule):
         im = np.concatenate((gt_im_row, pred_im_row, pred_seg_row, gt_seg_row), axis=0)
         return im.transpose((2, 0, 1))
 
-    def draw_fit_plot(self):
+    def draw_fit_plot(self,
+                      pixel_loss: List[float],
+                      dice_BG: List[float],
+                      dice_LV_Pool: List[float],
+                      dice_LV_Myo: List[float],
+                      dice_RV_Pool: List[float],
+                      reg_loss: List[float],
+                      title_prefix: str = "",
+                      ):
         print("Generating fit plot...")
         fig, ax = plt.subplots(1, 3, )
         fig.set_figwidth(fig.get_figheight() * 3)
-        ax[0].plot(list(range(len(self.train_loss))), self.train_loss, label="Image L2 Loss")
-        ax[0].set_title("Image Reconstruction Loss")
+        ax[0].plot(list(range(len(pixel_loss))), pixel_loss, label="Image L2 Loss")
+        ax[0].set_title(title_prefix + "Image Reconstruction Loss")
         ax[0].legend(loc="upper right")
-        ax[1].plot(list(range(len(self.dice))), [i[0] for i in self.dice], label="Background")
-        ax[1].plot(list(range(len(self.dice))), [i[1] for i in self.dice], label="LV Pool")
-        ax[1].plot(list(range(len(self.dice))), [i[2] for i in self.dice], label="LV Myo")
-        ax[1].plot(list(range(len(self.dice))), [i[3] for i in self.dice], label="RV Pool")
+        ax[1].plot(list(range(len(dice_BG))), dice_BG, label="Background")
+        ax[1].plot(list(range(len(dice_LV_Pool))), dice_LV_Pool, label="LV Pool")
+        ax[1].plot(list(range(len(dice_LV_Myo))), dice_LV_Myo, label="LV Myo")
+        ax[1].plot(list(range(len(dice_RV_Pool))), dice_RV_Pool, label="RV Pool")
         ax[1].set_ylim(0.5, 1.0)
         ax[1].yaxis.set_ticks(np.arange(0.5, 1.0, 0.025))
         ax[1].grid("x")
-        ax[1].set_title("Segmentation Dice")
+        ax[1].set_title(title_prefix + "Segmentation Dice")
         ax[1].legend(loc="upper right")
-        ax[2].plot(list(range(len(self.latent_reg_loss))), self.latent_reg_loss, label="Latent L2")
-        ax[2].set_title("Latent L2 Loss")
+        ax[2].plot(list(range(len(reg_loss))), reg_loss, label="Latent L2")
+        ax[2].set_title(title_prefix + "Latent L2 Loss")
         ax[2].legend(loc="upper right")
-        self.parent_logger.experiment.add_figure("val_loss_curve", fig, global_step=self.train_epoch)
-        del fig
+        return fig
 
     def draw_time_video(self, gt_im_path, gt_seg_path, z_values=(0.1, 0.3, 0.5, 0.7, 0.9)) -> torch.Tensor:
         nii_img = nib.load(gt_im_path)
@@ -406,12 +486,14 @@ class AbstractLatent(pl.LightningModule):
         return frames
 
     @torch.no_grad()
-    def evaluate(self, coord_arr: torch.Tensor, h_vector: torch.Tensor) -> np.array:
+    def evaluate(self, coord_arr: torch.Tensor, h_vector: torch.Tensor, as_numpy: bool = True) -> Union[np.ndarray, torch.Tensor]:
         assert coord_arr.shape[-1] == self.num_coord_dims
         assert len(h_vector.shape) == 1
         coord_arr = coord_arr.to(self.device)
         pred_im, pred_seg = self.forward(coord_arr[None], h_vector[None])
-        return pred_im[0].cpu().numpy(), pred_seg[0].cpu().numpy()
+        if as_numpy:
+            pred_im, pred_seg = pred_im.cpu().numpy(), pred_seg.cpu().numpy()
+        return pred_im[0], pred_seg[0]
 
     def evaluate_volume(self, out_shape: Tuple[int, ...], t=0.0):
         """ NOTE: torch.meshgrid has a different behaviour than np.meshgrid,
@@ -476,14 +558,10 @@ class AbstractLatent(pl.LightningModule):
 class ImplicitNetSegPrior(AbstractPrior):
     def __init__(self, *args, **kwargs):
         super(ImplicitNetSegPrior, self).__init__(*args, **kwargs)
-        self.num_classes = 4
-        self.pos_enc = self.pos_encoding_class(**kwargs)
         self.backbone = self.backbone_class(self.pos_enc.out_dim, self.latent_size, self.activation_class, **kwargs)
         self.recon_head = ReconstructionHead(self.backbone.out_size, **kwargs)
         self.seg_head = SegmentationHead(self.backbone.out_size, self.num_classes)
-        self.dice_loss = DiceLoss(reduction="none")
         self.val_model_class = ImplicitNetSegLatent
-        self.seg_class_weights = torch.tensor(kwargs.get("seg_class_weights"), dtype=torch.float32, device="cuda")
 
     def forward(self, coord, h):
         coord_ = coord.view((-1, coord.shape[-1]))
@@ -510,7 +588,7 @@ class ImplicitNetSegPrior(AbstractPrior):
         loss += seg_loss
         reg_loss = self.regularization_criterion(self.h[sample_idx])
         loss += reg_loss
-        if self.current_epoch % self.train_log_interval == 0 and sample_idx.item() < 3:
+        if self.current_epoch % self.log_interval == 0 and sample_idx.item() < 3:
             self.logger.experiment.add_image(f"train_images_{sample_idx.item()}",
                                              self.draw_training_image(image[0], pred_im[0], seg[0], pred_seg[0]),
                                              global_step=self.current_epoch)
@@ -534,12 +612,6 @@ class ImplicitNetSegPrior(AbstractPrior):
 
 
 class ImplicitNetSegLatent(AbstractLatent, ImplicitNetSegPrior):
-    def __init__(self, parent_logger=None, train_epoch=None, *args, **kwargs):
-        super(ImplicitNetSegLatent, self).__init__(*args, **kwargs)
-        self.parent_logger = parent_logger
-        self.val_log_interval = kwargs.get("val_log_interval")
-        self.train_epoch = train_epoch
-        self.batch = None
 
     def training_step(self, batch):
         coord, image, sample_idx, seg, _ = batch
@@ -552,18 +624,15 @@ class ImplicitNetSegLatent(AbstractLatent, ImplicitNetSegPrior):
         # Pixel regression loss
         background = pred_seg[:, 0].detach() > 0.5
         loss_pixel = self.reconstruction_criterion(pred_im, image_, log=False)#, background_mask=background)
-        self.train_loss[self.current_epoch].append(loss_pixel.item())
         loss += loss_pixel
 
         # Segmentation dice (not trained on, assume not available at test time). Not added to overall loss here.
         with torch.no_grad():
             dice = (1 - self.dice_loss(pred_seg.round(), to_1hot(seg_))).mean(0).squeeze().detach().cpu().tolist()
-            self.dice[self.current_epoch].append(dice)
 
         # Regularization loss for h (and optionally network weights)
         loss_reg = None
         loss_reg = self.regularization_criterion(self.h[sample_idx], log=False)
-        self.latent_reg_loss[self.current_epoch].append(loss_reg.item())
         loss += loss_reg
 
         progress = dict(loss_pixel=loss_pixel.item(),
@@ -571,9 +640,10 @@ class ImplicitNetSegLatent(AbstractLatent, ImplicitNetSegPrior):
                         dice_LV_Pool=dice[1],
                         dice_LV_Myo=dice[2],
                         dice_RV_Pool=dice[3],
+                        loss_reg=loss_reg.item(),
                         )
         del loss_pixel, dice, loss_reg
-        self.val_logging(**progress)
+        self.do_logging(**progress)
         return loss
 
 
@@ -599,13 +669,6 @@ class ImplicitNetSeparateSegPrior(ImplicitNetSegPrior):
 
 
 class ImplicitNetSeparateSegLatent(ImplicitNetSegLatent, ImplicitNetSeparateSegPrior):
-    def __init__(self, *args, **kwargs):
-        super(ImplicitNetSeparateSegLatent, self).__init__(*args, **kwargs)
-        self.val_log_interval = kwargs.get("val_log_interval")
-        self.lr = kwargs.get("fine_tune_lr")
-        self.train_loss = []
-        self.seg_loss = []
-        self.latent_reg_loss = []
 
     def configure_optimizers(self):
         return torch.optim.Adam([self.h], lr=self.lr)
@@ -637,13 +700,6 @@ class ImplicitNetMountedSegPrior(ImplicitNetSegPrior):
 
 
 class ImplicitNetMountedSegLatent(ImplicitNetSegLatent, ImplicitNetMountedSegPrior):
-    def __init__(self, *args, **kwargs):
-        super(ImplicitNetMountedSegLatent, self).__init__(*args, **kwargs)
-        self.val_log_interval = kwargs.get("val_log_interval")
-        self.lr = kwargs.get("fine_tune_lr")
-        self.train_loss = []
-        self.seg_loss = []
-        self.latent_reg_loss = []
 
     def configure_optimizers(self):
         return torch.optim.Adam([self.h], lr=self.lr)
