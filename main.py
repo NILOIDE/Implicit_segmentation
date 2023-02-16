@@ -109,14 +109,16 @@ def main_train(config_path: Optional[str] = None, exp_name: Optional[str] = None
 
     # Dataset
     dataset = Seg4DWholeImage_SAX(load_dir=config["train_data_dir"],
-                                  num_cases=config.get("num_train", -1),
+                                  case_start_idx=config.get("train_start_idx", 0),
+                                  num_cases=config["num_train"],
                                   **params.__dict__)
     coord_dimensions = dataset.sample_coords.shape[-1]
     assert coord_dimensions == len(params.side_length)
     train_dataloader = DataLoader(dataset, shuffle=True)
 
     val_dataset = Seg4DWholeImage_SAX_test(load_dir=config["val_data_dir"],
-                                           num_cases=config.get("num_val", -1),
+                                           case_start_idx=config.get("val_start_idx", config["num_train"]),
+                                           num_cases=config["num_val"],
                                            **params.__dict__)
     # Model dir creation
     if exp_name is not None:
@@ -183,7 +185,8 @@ def main_eval(weights_path: str, config_path: Optional[str] = None):
 
     # Define dataset and model
     dataset = Seg4DWholeImage_SAX_test(load_dir=config["test_data_dir"],
-                                       num_cases=config.get("num_test", -1),
+                                       case_start_idx=config.get("test_start_idx", config["num_train"] + config["num_val"]),
+                                       num_cases=config["num_test"],
                                        **params)
     if params["model_type"] == "separate":
         model = ImplicitNetSeparateSegLatent(dataset=dataset, split_name="test", **params)

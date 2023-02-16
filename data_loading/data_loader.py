@@ -4,33 +4,28 @@ import torch
 from torch.utils.data import Dataset
 import random
 import numpy as np
-from pathlib import Path
 import nibabel as nib
 import cv2
 from utils import draw_mask_to_image, find_sax_ED_images, find_sax_images, normalize_image, square_image
 
 from data_loading.augmentations import TranslateCoords, RotateCoords, GammaShift
 
-UKBB_IMGS_DIR = Path(r"D:\data")
-UKBB_IMGS_DIR_SMALL = Path(r"C:\Users\nilst\Documents\Implicit_segmentation\data\ukbb_small")
-UKBB_TEST_IMGS_DIR = Path(r"C:\Users\nilst\Documents\Implicit_segmentation\data\ukbb_test")
-
 
 class AbstractDataset(Dataset):
-    def __init__(self, load_dir=UKBB_IMGS_DIR_SMALL, num_cases=-1,
+    def __init__(self, load_dir, num_cases, case_start_idx=0,
                  side_length=(128, 128, -1), augmentations=(), **kwargs):
         self.load_dir = load_dir
         self.im_paths, self.seg_paths, self.bboxes = self.find_images(**kwargs)
-        if num_cases >= 0:
-            if self.im_paths is not None:
-                self.im_paths = self.im_paths[:num_cases]
-            if self.seg_paths is not None:
-                self.seg_paths = self.seg_paths[:num_cases]
-            if self.bboxes is not None:
-                self.bboxes = self.bboxes[:num_cases]
+        assert num_cases > 0
+        if self.im_paths is not None:
+            self.im_paths = self.im_paths[case_start_idx:case_start_idx+num_cases]
+        if self.seg_paths is not None:
+            self.seg_paths = self.seg_paths[case_start_idx:case_start_idx+num_cases]
+        if self.bboxes is not None:
+            self.bboxes = self.bboxes[case_start_idx:case_start_idx+num_cases]
         # If a side_length value was left as -1 by the user, use the max shape of that dimension instead
         self.out_shape = np.array(side_length)
-        self.augs = self.parse_augmentations(augmentations)#[TranslateCoords(x_lim=0.05, y_lim=0.05)]
+        self.augs = self.parse_augmentations(augmentations)
         self.do_augment = self._do_augment
         self.num_aug_params = sum([a.num_parameters for a in self.augs])
         sample = self.__getitem__(0)
