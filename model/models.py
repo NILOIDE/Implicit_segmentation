@@ -210,9 +210,9 @@ class AbstractPrior(Abstract):
                                  enable_model_summary=False, logger=False,
                                  enable_checkpointing=False, callbacks=[ValProgressBar()])
         val_trainer.fit(val_model, train_dataloaders=DataLoader(self.val_dataset, batch_size=1, shuffle=False))
-        scores_per_epoch = [float(np.mean(val_model.history_dice_LV_Pool[i])) +
+        scores_per_epoch = [(float(np.mean(val_model.history_dice_LV_Pool[i])) +
                             float(np.mean(val_model.history_dice_LV_Myo[i])) +
-                            float(np.mean(val_model.history_dice_RV_Pool[i]))
+                            float(np.mean(val_model.history_dice_RV_Pool[i]))) / 3
                             for i in range(len(val_model.history_dice_LV_Pool))]
         best_num_fine_tune_epochs = int(np.argmax(scores_per_epoch))
         best_score = scores_per_epoch[best_num_fine_tune_epochs]
