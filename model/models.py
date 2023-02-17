@@ -379,8 +379,8 @@ class AbstractLatent(Abstract):
         gt_seg = nib.load(self.dataset.seg_paths[sample_idx]).dataobj[..., t]
         gt_im, gt_seg = square_image(gt_im, gt_seg)
         gt_im = normalize_image(gt_im)
-        # gt_im = cv2.resize(gt_im, self.out_shape[:2])
-        # gt_seg = cv2.resize(gt_seg, self.out_shape[:2], interpolation=cv2.INTER_NEAREST)
+        gt_im = cv2.resize(gt_im, self.side_length[:2])
+        gt_seg = cv2.resize(gt_seg, self.side_length[:2], interpolation=cv2.INTER_NEAREST)
 
         gt_2D_ims = [gt_im[..., i] for i in range(gt_im.shape[-1])]
         gt_2D_segs = [gt_seg[..., i] for i in range(gt_seg.shape[-1])]

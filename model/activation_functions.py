@@ -102,10 +102,10 @@ class WIRE(Layer):
             scale: Scaling of Gabor Gaussian term
     '''
 
-    def __init__(self, in_size, out_size, bias=True, omega0=10.0, sigma0=10.0, **kwargs):
+    def __init__(self, in_size, out_size, bias=True, **kwargs):
         super().__init__(in_size, out_size, **kwargs)
-        self.omega_0 = omega0
-        self.scale_0 = sigma0
+        self.omega_0 = kwargs.get("wire_omega_0", 10.0)
+        self.scale_0 = kwargs.get("wire_scale_0", 10.0)
         self.freqs = nn.Linear(in_size, out_size, bias=bias)
         self.scale = nn.Linear(in_size, out_size, bias=bias)
 

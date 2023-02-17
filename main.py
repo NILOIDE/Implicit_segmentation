@@ -33,6 +33,7 @@ class Params:
     dropout: float = 0.00
     num_hidden_layers: int = 8
     side_length: Tuple[int, ...] = (100, 100, -1, 1)
+    coord_noise_std: float = 1e-3
     heart_pad: int = 10
     max_epochs: int = 3001
     log_interval: int = 1
@@ -50,6 +51,8 @@ class Params:
     latent_reg: float = 1e-4
     weight_reg: float = 1e-4
     activation: str = "wire"  # periodic, relu, wire
+    wire_omega_0: float = 10.
+    wire_sigma_0: float = 10.
     skip_connections: bool = True
     input_coord_to_all_layers: bool = False
     model_type: str = "shared"  # shared, separate, mounted

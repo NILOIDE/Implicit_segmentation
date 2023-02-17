@@ -1,8 +1,10 @@
 train_data_dir: D:\data
-num_train: -1
+num_train: 1500
 val_data_dir: C:\Users\nilst\Documents\Implicit_segmentation\data\ukbb_val
+val_start_idx: 0
 num_val: 5
 test_data_dir: C:\Users\nilst\Documents\Implicit_segmentation\data\ukbb_test
+test_start_idx: 0
 num_test: 6
 log_dir: C:\Users\nilst\Documents\Implicit_segmentation\logs\4d
 
@@ -18,7 +20,7 @@ params:
     side_length: [100, 100, -1, 1]
     max_epochs: 201
     log_interval: 1
-    val_interval: 10
+    val_interval: 20
     fine_tune_max_epochs: 2001  # Lightning is faster doing (2000 epochs x 1 batch) than (1 epoch x 2000 batches)
     fine_tune_log_interval: 500
     x_holdout_rate: 1  # Height
@@ -26,8 +28,8 @@ params:
     z_holdout_rate: 1  # Slices
     t_holdout_rate: 1  # Time
     seg_class_weights: [1.0, 1.0, 1.0, 1.0]
-    lr: 1e-3
-    fine_tune_lr: 1e-3
+    lr: 1e-4
+    fine_tune_lr: 1e-4
     latent_reg: 1e-4
     weight_reg: 1e-4
     activation: "wire"  # periodic, relu, wire

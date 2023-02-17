@@ -1,4 +1,4 @@
-from typing import Iterable, Dict, Any
+from typing import Iterable, Dict, Any, Tuple
 
 import torch
 from torch.utils.data import Dataset
@@ -14,6 +14,8 @@ from data_loading.augmentations import TranslateCoords, RotateCoords, GammaShift
 class AbstractDataset(Dataset):
     def __init__(self, load_dir, num_cases, case_start_idx=0,
                  side_length=(128, 128, -1), augmentations=(), **kwargs):
+        self.coord_noise_std = kwargs.get("coord_noise_std", 0.0)
+        assert self.coord_noise_std >= 0.0
         self.load_dir = load_dir
         self.im_paths, self.seg_paths, self.bboxes = self.find_images(**kwargs)
         assert num_cases > 0
@@ -26,7 +28,7 @@ class AbstractDataset(Dataset):
         # If a side_length value was left as -1 by the user, use the max shape of that dimension instead
         self.out_shape = np.array(side_length)
         self.augs = self.parse_augmentations(augmentations)
-        self.do_augment = self._do_augment
+        self.augment = self._augment
         self.num_aug_params = sum([a.num_parameters for a in self.augs])
         sample = self.__getitem__(0)
         self.sample_coords, self.sample_image, self.sample_seg = sample[0], sample[1], sample[3]
@@ -34,12 +36,16 @@ class AbstractDataset(Dataset):
     def __len__(self):
         return len(self.im_paths)
 
-    @property
-    def _do_augment(self):
-        return len(self.augs) > 0
-
     def find_images(self, **kwargs):
         raise NotImplementedError("This is abstract class. Implement your own.")
+
+    @property
+    def _augment(self):
+        return len(self.augs) > 0
+
+    @property
+    def add_coord_noise(self):
+        return self.coord_noise_std > 0.0
 
     @staticmethod
     def parse_augmentations(augs: Iterable[Dict[str, Any]]):
@@ -53,6 +59,22 @@ class AbstractDataset(Dataset):
                 raise KeyError(f'Provided augmentation name "{n}" is not in the default dictionary of augmentations.')
             aug_instances.append(class_name(**params))
         return aug_instances
+
+    def apply_augmentations(self, coords: np.ndarray, img: np.ndarray, seg: np.ndarray) \
+            -> Tuple[np.ndarray, np.ndarray, np.ndarray, torch.Tensor]:
+        aug_params = []
+        if self.augment:
+            data = {"coords": coords, "image": img, "seg": seg}
+            for aug in self.augs:
+                aug_params.extend(aug(data))
+            coords, img, seg = data["coords"], data["image"], data["seg"]
+        aug_params = torch.tensor(aug_params)
+        return coords, img, seg, aug_params
+
+    def apply_coord_noise(self, coords):
+        if self.add_coord_noise:
+            coords += np.random.normal(0.0, self.coord_noise_std, coords.shape)
+        return coords
 
     def visualize(self, im_path: str, seg_path: str = None, shape=(32, 32)):
         im = nib.load(im_path).get_data()
@@ -103,13 +125,8 @@ class Seg3DCropped(AbstractDataset):
         z = z / img.shape[2]
         coords = np.stack((x, y, z), axis=-1)
 
-        aug_params = []
-        if self.do_augment:
-            data = {"coords": coords, "image": img, "seg": seg}
-            for aug in self.augs:
-                aug_params.extend(aug(data))
-            coords, img, seg = data["coords"], data["image"], data["seg"]
-        aug_params = torch.tensor(aug_params)
+        coords = self.apply_coord_noise(coords)
+        coords, img, seg, aug_params = self.apply_augmentations(coords, img, seg)
 
         coords = torch.from_numpy(coords).to(torch.float32)
         img = torch.from_numpy(img).to(torch.float32)
@@ -127,7 +144,11 @@ class Seg3DCropped_SAX(Seg3DCropped):
 
 class Seg3DCropped_SAX_test(Seg3DCropped_SAX):
     @property
-    def _do_augment(self):
+    def _augment(self):
+        return False
+
+    @property
+    def add_coord_noise(self):
         return False
 
 
@@ -156,13 +177,8 @@ class Seg3DWholeImage(AbstractDataset):
         z = z / img.shape[2]
         coords = torch.stack((x, y, z), dim=-1).numpy()
 
-        aug_params = []
-        if self.do_augment:
-            data = {"coords": coords, "image": img, "seg": seg}
-            for aug in self.augs:
-                aug_params.extend(aug(data))
-            coords, img, seg = data["coords"], data["image"], data["seg"]
-        aug_params = torch.tensor(aug_params)
+        coords = self.apply_coord_noise(coords)
+        coords, img, seg, aug_params = self.apply_augmentations(coords, img, seg)
 
         coords = torch.from_numpy(coords).to(torch.float32)
         img = torch.from_numpy(img).to(torch.float32)
@@ -180,7 +196,11 @@ class Seg3DWholeImage_SAX(Seg3DWholeImage):
 
 class Seg3DWholeImage_SAX_test(Seg3DWholeImage_SAX):
     @property
-    def _do_augment(self):
+    def _augment(self):
+        return False
+
+    @property
+    def add_coord_noise(self):
         return False
 
 
@@ -216,13 +236,8 @@ class Seg4DWholeImage(AbstractDataset):
         t = torch.full_like(x, t)
         coords = torch.stack((x, y, z, t), dim=-1).numpy()
 
-        aug_params = []
-        if self.do_augment:
-            data = {"coords": coords, "image": img, "seg": seg}
-            for aug in self.augs:
-                aug_params.extend(aug(data))
-            coords, img, seg = data["coords"], data["image"], data["seg"]
-        aug_params = torch.tensor(aug_params)
+        coords = self.apply_coord_noise(coords)
+        coords, img, seg, aug_params = self.apply_augmentations(coords, img, seg)
 
         coords = torch.from_numpy(coords).to(torch.float32)
         img = torch.from_numpy(img).to(torch.float32)
@@ -240,5 +255,9 @@ class Seg4DWholeImage_SAX(Seg4DWholeImage):
 
 class Seg4DWholeImage_SAX_test(Seg4DWholeImage_SAX):
     @property
-    def _do_augment(self):
+    def _augment(self):
+        return False
+
+    @property
+    def add_coord_noise(self):
         return False
