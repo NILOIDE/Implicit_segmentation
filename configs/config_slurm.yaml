@@ -7,7 +7,7 @@ num_val: 5
 test_data_dir: /home/guests/projects/ukbb/cardiac/cardiac_segmentations/subjects
 test_start_idx: 1505
 num_test: 6
-log_dir: /home/guests/nil/Implicit_segmentation/logs/4d
+log_dir: /home/guests/nil_stolt/results/cardiac_imp_seg
 
 params:
     initial_val: True
