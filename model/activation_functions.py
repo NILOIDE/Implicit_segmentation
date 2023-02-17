@@ -104,7 +104,7 @@ class WIRE(Layer):
 
     def __init__(self, in_size, out_size, bias=True, **kwargs):
         super().__init__(in_size, out_size, **kwargs)
-        self.omega_0 = kwargs.get("wire_omega_0", 10.0)
+        self.omega_0 = kwargs.get("wire_omega_0", 10.0)  # Freq
         self.scale_0 = kwargs.get("wire_scale_0", 10.0)
         self.freqs = nn.Linear(in_size, out_size, bias=bias)
         self.scale = nn.Linear(in_size, out_size, bias=bias)

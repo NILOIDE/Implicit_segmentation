@@ -10,36 +10,19 @@ num_test: 6
 log_dir: /home/guests/nil/Implicit_segmentation/logs/4d
 
 params:
-    initial_val: False
+    initial_val: True
     pos_encoding: "none"  # nerf, none, gaussian
-#    num_frequencies: (128,)
-    freq_scale: 1.0
-    latent_size: 128
-    hidden_size: 128
-    dropout: 0.00
-    num_hidden_layers: 8
-    side_length: [100, 100, -1, 1]
-    max_epochs: 201
-    log_interval: 1
-    val_interval: 10
+    side_length: [192, 192, -1, 1]
+    max_epochs: 401
+    log_interval: 5
+    val_interval: 20
     fine_tune_max_epochs: 2001  # Lightning is faster doing (2000 epochs x 1 batch) than (1 epoch x 2000 batches)
     fine_tune_log_interval: 500
-    x_holdout_rate: 1  # Height
-    y_holdout_rate: 1  # Width
-    z_holdout_rate: 1  # Slices
-    t_holdout_rate: 1  # Time
-    seg_class_weights: [1.0, 1.0, 1.0, 1.0]
-    lr: 1e-3
-    fine_tune_lr: 1e-3
+    lr: 1e-4
+    fine_tune_lr: 1e-4
     latent_reg: 1e-4
     weight_reg: 1e-4
     activation: "wire"  # periodic, relu, wire
+    wire_omega_0: 10.0
     skip_connections: True
     input_coord_to_all_layers: False
-    model_type: "shared"  # shared, separate, mounted
-#    augmentations:
-#        - translation:
-#            x_lim: 0.25
-#            y_lim: 0.25
-#        - gamma:
-#            gamma_lim: [0.7, 1.4]
