@@ -1,0 +1,30 @@
+
+# File environment.yml
+# Run with: conda env create -f environment.yml
+
+name: my_environment
+channels:
+  - pytorch
+  - anaconda
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9
+  - pip
+  - tqdm
+  - cudatoolkit=11.3
+  - pytorch>=1.10.1
+  - torchvision>=0.11.2
+  - matplotlib
+  - monai
+  - tensorboard
+  - pip:
+    - opencv-python
+    - torch-sparse
+    - torch-scatter
+    - torch-geometric
+    - nibabel
+    - SimpleITK
+    - scipy
+    - pandas
+    - seaborn
