@@ -12,19 +12,23 @@ dependencies:
   - python=3.9
   - pip
   - tqdm
-  - cudatoolkit=11.3
-  - pytorch>=1.10.1
-  - torchvision>=0.11.2
+#  - cudatoolkit=11.3
+#  - pytorch>=1.10.1
+#  - torchvision>=0.11.2
   - matplotlib
   - monai
   - tensorboard
   - pip:
-    - opencv-python
-    - torch-sparse
-    - torch-scatter
-    - torch-geometric
-    - nibabel
-    - SimpleITK
-    - scipy
-    - pandas
-    - seaborn
+      - torchsummary==1.5.1
+      - torch==1.11.0+cu113
+      - torchvision==0.12.0
+      - pytorch-lightning
+      - opencv-python
+      - torch-sparse
+      - torch-scatter
+      - torch-geometric
+      - nibabel
+      - SimpleITK
+      - scipy
+      - pandas
+      - seaborn
