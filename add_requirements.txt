@@ -1,0 +1,10 @@
+pytorch_lightning
+matplotlib
+opencv-python
+nibabel
+SimpleITK
+scipy
+pandas
+seaborn
+monai
+#tensorboard
