@@ -265,37 +265,124 @@ class AbstractLatent(Abstract):
         if self.current_epoch % self.log_interval == 0:
             # Logged to training trainer's logger
             if self.current_epoch in self.history_loss and self.history_loss[self.current_epoch]:
-                logger.experiment.add_scalar(f"{self.split_name}_loss/{self.current_epoch}",
-                                             np.mean(self.history_loss[self.current_epoch]),
-                                             global_step=self.train_epoch)
+                try:
+                    logger.experiment.add_scalar(f"{self.split_name}_loss/{self.current_epoch}",
+                                                 np.mean(self.history_loss[self.current_epoch]),
+                                                 global_step=self.train_epoch)
+                except AttributeError as e:
+                    try:
+                        logger.add_scalar(f"{self.split_name}_loss/{self.current_epoch}",
+                                          np.mean(self.history_loss[self.current_epoch]),
+                                          global_step=self.train_epoch)
+                    except AttributeError as r:
+                        logger.log(f"{self.split_name}_loss/{self.current_epoch}",
+                                   np.mean(self.history_loss[self.current_epoch]),
+                                   global_step=self.train_epoch)
+
             if self.current_epoch in self.history_pixel_loss and self.history_pixel_loss[self.current_epoch]:
-                logger.experiment.add_scalar(f"{self.split_name}_pixel_loss/{self.current_epoch}",
-                                             np.mean(self.history_pixel_loss[self.current_epoch]),
-                                             global_step=self.train_epoch)
+                try:
+                    logger.experiment.add_scalar(f"{self.split_name}_pixel_loss/{self.current_epoch}",
+                                                 np.mean(self.history_pixel_loss[self.current_epoch]),
+                                                 global_step=self.train_epoch)
+                except AttributeError as e:
+                    try:
+                        logger.add_scalar(f"{self.split_name}_pixel_loss/{self.current_epoch}",
+                                          np.mean(self.history_pixel_loss[self.current_epoch]),
+                                          global_step=self.train_epoch)
+                    except AttributeError as r:
+                        logger.log(f"{self.split_name}_pixel_loss/{self.current_epoch}",
+                                   np.mean(self.history_pixel_loss[self.current_epoch]),
+                                   global_step=self.train_epoch)
+
             if self.current_epoch in self.history_seg_loss and self.history_seg_loss[self.current_epoch]:
-                logger.experiment.add_scalar(f"{self.split_name}_seg_loss/{self.current_epoch}",
-                                             np.mean(self.history_seg_loss[self.current_epoch]),
-                                             global_step=self.train_epoch)
+                try:
+                    logger.experiment.add_scalar(f"{self.split_name}_seg_loss/{self.current_epoch}",
+                                                 np.mean(self.history_seg_loss[self.current_epoch]),
+                                                 global_step=self.train_epoch)
+                except AttributeError as e:
+                    try:
+                        logger.add_scalar(f"{self.split_name}_seg_loss/{self.current_epoch}",
+                                          np.mean(self.history_seg_loss[self.current_epoch]),
+                                          global_step=self.train_epoch)
+                    except AttributeError as r:
+                        logger.log(f"{self.split_name}_seg_loss/{self.current_epoch}",
+                                   np.mean(self.history_seg_loss[self.current_epoch]),
+                                   global_step=self.train_epoch)
+
             if self.current_epoch in self.history_reg_loss and self.history_reg_loss[self.current_epoch]:
-                logger.experiment.add_scalar(f"{self.split_name}_reg_L2/{self.current_epoch}",
-                                             np.mean(self.history_reg_loss[self.current_epoch]),
-                                             global_step=self.train_epoch)
+                try:
+                    logger.experiment.add_scalar(f"{self.split_name}_reg_L2/{self.current_epoch}",
+                                                 np.mean(self.history_reg_loss[self.current_epoch]),
+                                                 global_step=self.train_epoch)
+                except AttributeError as e:
+                    try:
+                        logger.add_scalar(f"{self.split_name}_reg_L2/{self.current_epoch}",
+                                          np.mean(self.history_reg_loss[self.current_epoch]),
+                                          global_step=self.train_epoch)
+                    except AttributeError as r:
+                        logger.log(f"{self.split_name}_reg_L2/{self.current_epoch}",
+                                   np.mean(self.history_reg_loss[self.current_epoch]),
+                                   global_step=self.train_epoch)
+
             if self.current_epoch in self.history_dice_BG and self.history_dice_BG[self.current_epoch]:
-                logger.experiment.add_scalar(f"{self.split_name}_dice_BG/{self.current_epoch}",
-                                             np.mean(self.history_dice_BG[self.current_epoch]),
-                                             global_step=self.train_epoch)
+                try:
+                    logger.experiment.add_scalar(f"{self.split_name}_dice_BG/{self.current_epoch}",
+                                                 np.mean(self.history_dice_BG[self.current_epoch]),
+                                                 global_step=self.train_epoch)
+                except AttributeError as e:
+                    try:
+                        logger.add_scalar(f"{self.split_name}_dice_BG/{self.current_epoch}",
+                                          np.mean(self.history_dice_BG[self.current_epoch]),
+                                          global_step=self.train_epoch)
+                    except AttributeError as r:
+                        logger.log(f"{self.split_name}_dice_BG/{self.current_epoch}",
+                                   np.mean(self.history_dice_BG[self.current_epoch]),
+                                   global_step=self.train_epoch)
+
             if self.current_epoch in self.history_dice_LV_Pool and self.history_dice_LV_Pool[self.current_epoch]:
-                logger.experiment.add_scalar(f"{self.split_name}_dice_LV_Pool/{self.current_epoch}",
-                                             np.mean(self.history_dice_LV_Pool[self.current_epoch]),
-                                             global_step=self.train_epoch)
+                try:
+                    logger.experiment.add_scalar(f"{self.split_name}_dice_LV_Pool/{self.current_epoch}",
+                                                 np.mean(self.history_dice_LV_Pool[self.current_epoch]),
+                                                 global_step=self.train_epoch)
+                except AttributeError as e:
+                    try:
+                        logger.add_scalar(f"{self.split_name}_dice_LV_Pool/{self.current_epoch}",
+                                          np.mean(self.history_dice_LV_Pool[self.current_epoch]),
+                                          global_step=self.train_epoch)
+                    except AttributeError as r:
+                        logger.log(f"{self.split_name}_dice_LV_Pool/{self.current_epoch}",
+                                   np.mean(self.history_dice_LV_Pool[self.current_epoch]),
+                                   global_step=self.train_epoch)
+
             if self.current_epoch in self.history_dice_LV_Myo and self.history_dice_LV_Myo[self.current_epoch]:
-                logger.experiment.add_scalar(f"{self.split_name}_dice_LV_Myo/{self.current_epoch}",
-                                             np.mean(self.history_dice_LV_Myo[self.current_epoch]),
-                                             global_step=self.train_epoch)
+                try:
+                    logger.experiment.add_scalar(f"{self.split_name}_dice_LV_Myo/{self.current_epoch}",
+                                                 np.mean(self.history_dice_LV_Myo[self.current_epoch]),
+                                                 global_step=self.train_epoch)
+                except AttributeError as e:
+                    try:
+                        logger.add_scalar(f"{self.split_name}_dice_LV_Myo/{self.current_epoch}",
+                                          np.mean(self.history_dice_LV_Myo[self.current_epoch]),
+                                          global_step=self.train_epoch)
+                    except AttributeError as r:
+                        logger.log(f"{self.split_name}_dice_LV_Myo/{self.current_epoch}",
+                                   np.mean(self.history_dice_LV_Myo[self.current_epoch]),
+                                   global_step=self.train_epoch)
+
             if self.current_epoch in self.history_dice_RV_Pool and self.history_dice_RV_Pool[self.current_epoch]:
-                logger.experiment.add_scalar(f"{self.split_name}_dice_RV_Pool/{self.current_epoch}",
-                                             np.mean(self.history_dice_RV_Pool[self.current_epoch]),
-                                             global_step=self.train_epoch)
+                try:
+                    logger.experiment.add_scalar(f"{self.split_name}_dice_RV_Pool/{self.current_epoch}",
+                                                 np.mean(self.history_dice_RV_Pool[self.current_epoch]),
+                                                 global_step=self.train_epoch)
+                except AttributeError as e:
+                    try:
+                        logger.add_scalar(f"{self.split_name}_dice_RV_Pool/{self.current_epoch}",
+                                          np.mean(self.history_dice_RV_Pool[self.current_epoch]),
+                                          global_step=self.train_epoch)
+                    except AttributeError as r:
+                        logger.log(f"{self.split_name}_dice_RV_Pool/{self.current_epoch}",
+                                          np.mean(self.history_dice_RV_Pool[self.current_epoch]),
+                                          global_step=self.train_epoch)
 
             # Draw images and save them to logger
             for sample_idx in range(len(self.dataset)):
