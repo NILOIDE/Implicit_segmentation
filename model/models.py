@@ -73,17 +73,15 @@ class Abstract(pl.LightningModule):
     def __init__(self, *args, aug_num_parameters: int = 0, split_name="", **kwargs):
         super(Abstract, self).__init__()
         self.split_name = split_name
-        self.latent_size = kwargs.get("latent_size")
+        self.latent_size = int(kwargs.get("latent_size"))
         self.lr = float(kwargs.get("lr"))
-        self.max_epochs = kwargs.get("max_epochs")
+        self.max_epochs = int(kwargs.get("max_epochs"))
 
         self.dataset = kwargs.get("dataset")
         self.num_train_samples = 1
-        self.num_coord_dims = kwargs.get("coord_dimensions")
         if self.dataset is not None:
             self.num_train_samples = len(self.dataset)
             self.num_coord_dims = self.dataset.sample_coords.shape[-1]
-        if "coord_dimensions" not in kwargs:
             kwargs["num_coord_dims"] = self.num_coord_dims
         self.activation_class, self.pos_encoding_class, self.backbone_class = process_params(**kwargs)
         self.side_length = kwargs.get("side_length")
@@ -577,7 +575,8 @@ class AbstractLatent(Abstract):
         return frames
 
     @torch.no_grad()
-    def evaluate(self, coord_arr: torch.Tensor, h_vector: torch.Tensor, as_numpy: bool = True) -> Union[np.ndarray, torch.Tensor]:
+    def evaluate(self, coord_arr: torch.Tensor, h_vector: torch.Tensor, as_numpy: bool = True) \
+            -> Union[Tuple[np.ndarray, np.ndarray], Tuple[torch.Tensor, torch.Tensor]]:
         assert coord_arr.shape[-1] == self.num_coord_dims
         assert len(h_vector.shape) == 1
         coord_arr = coord_arr.to(self.device)

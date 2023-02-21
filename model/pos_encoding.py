@@ -9,7 +9,7 @@ import numpy as np
 class PosEncodingNone(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__()
-        self.in_features = kwargs.get("num_coord_dims")
+        self.in_features = int(kwargs.get("num_coord_dims"))
         assert self.in_features is not None
         self.out_dim = self.in_features
 
