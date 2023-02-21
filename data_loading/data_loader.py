@@ -210,6 +210,7 @@ class Seg4DWholeImage(AbstractDataset):
         nii_img = nib.load(self.im_paths[idx])
         nii_seg = nib.load(self.seg_paths[idx])
         raw_shape = nii_img.shape
+        assert len(raw_shape) == 4, f"Img path: {self.im_paths[idx]}"
 
         # Take only one time frame of the series
         t = random.randint(0, raw_shape[-1] - 1)
@@ -223,13 +224,18 @@ class Seg4DWholeImage(AbstractDataset):
         img = normalize_image(cropped_im)
         seg = cropped_seg
 
-        img = cv2.resize(img, self.out_shape[:2])
-        seg = cv2.resize(seg, self.out_shape[:2], interpolation=cv2.INTER_NEAREST)
+        # img = cv2.resize(img, self.out_shape[:2])
+        # seg = cv2.resize(seg, self.out_shape[:2], interpolation=cv2.INTER_NEAREST)
 
         # torch.meshgrid has a different behaviour than np.meshgrid
-        x, y, z = torch.meshgrid(torch.arange(img.shape[0], dtype=torch.float32),
-                                 torch.arange(img.shape[1], dtype=torch.float32),
-                                 torch.arange(img.shape[2], dtype=torch.float32))
+        try:
+            x, y, z = torch.meshgrid(torch.arange(img.shape[0], dtype=torch.float32),
+                                     torch.arange(img.shape[1], dtype=torch.float32),
+                                     torch.arange(img.shape[2], dtype=torch.float32))
+        except IndexError as e:
+            print(f"img shape: {img.shape}, cropped shape: {cropped_im.shape}, frame_im_data: {frame_im_data.shape}")
+            print(f"Img path: {self.im_paths[idx]}")
+            raise e
         x = x / img.shape[0]
         y = y / img.shape[1]
         z = z / img.shape[2]

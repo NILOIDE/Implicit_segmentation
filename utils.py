@@ -77,6 +77,7 @@ def find_sax_ED_images(load_dir: Union[str, Path], num_cases: int = -1, get_bbox
     count = 0
     img_file = "sa_ED.nii.gz"
     seg_file = "seg_sa_ED.nii.gz"
+    start_time = time.time()
     for parent, subdir, files in os.walk(str(load_dir)):
         if num_cases > 0 and count >= num_cases:
             break
@@ -96,6 +97,8 @@ def find_sax_ED_images(load_dir: Union[str, Path], num_cases: int = -1, get_bbox
         count += 1
     if num_cases > 0 and count != num_cases:
         raise ValueError(f"Did not find required amount of cases ({num_cases}) in directory: {load_dir}")
+    elapsed = time.time() - start_time
+    print(f"Found {count} cases in {elapsed // 60}m {int(elapsed % 60)}s.")
     return ims, segs, bboxes if get_bbox else None
 
 
@@ -116,8 +119,6 @@ def find_sax_images(load_dir: Union[str, Path], num_cases: int = -1, get_bbox: b
             continue
         if not os.path.exists(seg_path):
             continue
-        if len(nib.load(im_path).shape) != 4:
-            continue
         ims.append(im_path)
         segs.append(seg_path)
         if get_bbox:
@@ -129,7 +130,7 @@ def find_sax_images(load_dir: Union[str, Path], num_cases: int = -1, get_bbox: b
     if num_cases > 0 and count != num_cases:
         raise ValueError(f"Did not find required amount of cases ({num_cases}) in directory: {load_dir}")
     elapsed = time.time() - start_time
-    print(f"Found {num_cases} cases in {elapsed//60}m {int(elapsed%60)}s.")
+    print(f"Found {count} cases in {elapsed//60}m {int(elapsed%60)}s.")
     return ims, segs, bboxes if get_bbox else None
 
 
