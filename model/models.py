@@ -216,8 +216,12 @@ class AbstractPrior(Abstract):
                             for i in range(len(val_model.history_dice_LV_Pool))]
         best_num_fine_tune_epochs = int(np.argmax(scores_per_epoch))
         best_score = scores_per_epoch[best_num_fine_tune_epochs]
-        self.log(f"val_best_score", best_score, prog_bar=True)
-        self.log(f"val_best_num_fine_tune_epochs", float(best_num_fine_tune_epochs), prog_bar=True)
+        try:
+            self.logger.experiment.add_scalar(f"val_best_score", best_score, prog_bar=True)
+            self.logger.experiment.add_scalar(f"val_best_num_fine_tune_epochs", float(best_num_fine_tune_epochs), prog_bar=True)
+        except AttributeError as e:
+            self.log(f"val_best_score", best_score, prog_bar=True)
+            self.log(f"val_best_num_fine_tune_epochs", float(best_num_fine_tune_epochs), prog_bar=True)
         if best_score > self.overall_best_score:
             self.overall_best_score = best_score
             self.overall_best_num_fine_tune_epochs = best_num_fine_tune_epochs
