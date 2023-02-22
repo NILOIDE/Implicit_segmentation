@@ -5,7 +5,7 @@ val_data_dir: /home/guests/projects/ukbb/cardiac/cardiac_segmentations/subjects
 val_start_idx: 1500
 num_val: 10
 test_data_dir: /home/guests/projects/ukbb/cardiac/cardiac_segmentations/subjects
-test_start_idx: 1505
+test_start_idx: 1600
 num_test: 100
 log_dir: /home/guests/nil_stolt/results/cardiac_imp_seg
 
