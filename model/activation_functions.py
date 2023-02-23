@@ -1,3 +1,5 @@
+import abc
+
 import torch
 from torch import nn
 import numpy as np
@@ -12,10 +14,9 @@ class Layer(nn.Module):
         self.in_size = in_size
         self.out_size = out_size
 
+    @abc.abstractmethod
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.activation(self.linear(x))
-        x = self.dropout(x)
-        return x
+        raise NotImplementedError
 
 
 class Relu(Layer):
