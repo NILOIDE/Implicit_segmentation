@@ -7,4 +7,5 @@ scipy
 pandas
 seaborn
 monai
-#tensorboard
+tensorboard
+moviepy # For adding videos to tensorboard
