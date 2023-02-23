@@ -101,6 +101,8 @@ class Abstract(pl.LightningModule):
         self.z_holdout_rate = kwargs.get("z_holdout_rate", 1)
         self.t_holdout_rate = kwargs.get("t_holdout_rate", 1)
 
+        self.rec_loss_weight = kwargs.get("rec_loss_weight", 1.0)
+
         self.mse_loss = nn.MSELoss(reduction="none")
         self.bce_loss = nn.BCELoss(reduction="none")
         self.l2_loss = nn.MSELoss()
@@ -116,7 +118,7 @@ class Abstract(pl.LightningModule):
         loss = loss.mean()
         if log:
             self.log(f"{self.split_name}/pixel_bce", loss.item(), prog_bar=True)
-        return loss
+        return self.rec_loss_weight * loss
 
     def regularization_criterion(self, h, log=True):
         loss = self.l2_loss(h, torch.zeros_like(h))
@@ -149,8 +151,8 @@ class Abstract(pl.LightningModule):
             self.log(f"{self.split_name}/dice_LV_Pool", dice[1], prog_bar=True)
             self.log(f"{self.split_name}/dice_LV_Myo", dice[2], prog_bar=True)
             self.log(f"{self.split_name}/dice_RV_Pool", dice[3], prog_bar=True)
-
-        return loss_seg_dice_weighted + loss_seg_bce_weighted
+        loss = loss_seg_dice_weighted + loss_seg_bce_weighted
+        return self.seg_loss_weight * loss
 
 
 class AbstractPrior(Abstract):
@@ -161,6 +163,7 @@ class AbstractPrior(Abstract):
         self.save_hyperparameters(kwargs)
 
         self.dice_loss = DiceLoss(reduction="none")
+        self.seg_loss_weight = kwargs.get("seg_loss_weight", 1.0)
         self.seg_class_weights = torch.tensor(kwargs.get("seg_class_weights"), dtype=torch.float32, device="cuda")
 
         self.val_dataset: AbstractDataset = val_dataset
@@ -416,10 +419,12 @@ class AbstractLatent(Abstract):
                     dice_RV_Pool=[self.history_dice_RV_Pool[t][i] for t in range(len(self.history_dice_RV_Pool))],
                     reg_loss=[self.history_reg_loss[t][i] for t in range(len(self.history_reg_loss))],
                     title_prefix=f"Sample {i}'s ")
-                logger.experiment.add_figure(f"{self.split_name}_loss_curve_sample_{i}", fig, global_step=self.train_epoch)
+                logger.experiment.add_figure(f"{self.split_name}_loss_curve_sample_{i}", fig,
+                                             global_step=self.train_epoch)
                 if self.num_coord_dims == 4 and self.dataset is not None:
                     vid = self.draw_time_video(self.dataset.im_paths[i], self.dataset.seg_paths[i])
-                    logger.experiment.add_video(f"{self.split_name}_end_video_sample_{i}", vid[None], fps=10, global_step=self.train_epoch)
+                    logger.experiment.add_video(f"{self.split_name}_end_video_sample_{i}", vid[None], fps=10,
+                                                global_step=self.train_epoch)
                     del vid
 
         else:

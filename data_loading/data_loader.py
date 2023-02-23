@@ -1,4 +1,4 @@
-from typing import Iterable, Dict, Any, Tuple
+from typing import Iterable, Dict, Any, Tuple, Optional
 
 import torch
 from torch.utils.data import Dataset
@@ -25,6 +25,10 @@ class AbstractDataset(Dataset):
             self.seg_paths = self.seg_paths[case_start_idx:case_start_idx+num_cases]
         if self.bboxes is not None:
             self.bboxes = self.bboxes[case_start_idx:case_start_idx+num_cases]
+        self.x_ho_rate = kwargs.get("x_holdout_rate", 1)
+        self.y_ho_rate = kwargs.get("y_holdout_rate", 1)
+        self.z_ho_rate = kwargs.get("z_holdout_rate", 1)
+        self.t_ho_rate = kwargs.get("t_holdout_rate", 1)
         # If a side_length value was left as -1 by the user, use the max shape of that dimension instead
         self.out_shape = np.array(side_length)
         self.augs = self.parse_augmentations(augmentations)
@@ -38,6 +42,25 @@ class AbstractDataset(Dataset):
 
     def find_images(self, **kwargs):
         raise NotImplementedError("This is abstract class. Implement your own.")
+
+    def load_and_undersample_nifti(self, img_idx, t: Optional[float] = None):
+        nii_img = nib.load(self.im_paths[img_idx])
+        nii_seg = nib.load(self.seg_paths[img_idx])
+        raw_shape = nii_img.shape
+        t_idx = None
+        if t is not None:
+            assert isinstance(t, float)
+            t_idx = int(t * raw_shape[-1]) % raw_shape[-1]
+            t_idx -= t_idx % self.t_ho_rate
+            frame_im_data = nii_img.dataobj[::self.x_ho_rate, ::self.y_ho_rate, ::self.z_ho_rate, t_idx]
+            frame_seg_data = nii_seg.dataobj[::self.x_ho_rate, ::self.y_ho_rate, ::self.z_ho_rate, t_idx].astype(np.uint8)
+        else:
+            frame_im_data = nii_img.dataobj[
+                            ::self.x_ho_rate, ::self.y_ho_rate, ::self.z_ho_rate, ::self.t_ho_rate]
+            frame_seg_data = nii_seg.dataobj[
+                             ::self.x_ho_rate, ::self.y_ho_rate, ::self.z_ho_rate, ::self.t_ho_rate].astype(np.uint8)
+
+        return frame_im_data, frame_seg_data, raw_shape, t_idx
 
     @property
     def _augment(self):
@@ -206,23 +229,20 @@ class Seg3DWholeImage_SAX_test(Seg3DWholeImage_SAX):
 
 class Seg4DWholeImage(AbstractDataset):
     def __getitem__(self, idx):
+        # Take only one time frame of the series (to be converted to int later)
+        t_sample = random.uniform(0, 1)
         # Load image and seg data
-        nii_img = nib.load(self.im_paths[idx])
-        nii_seg = nib.load(self.seg_paths[idx])
-        raw_shape = nii_img.shape
+        frame_im_data, frame_seg_data, raw_shape, t = self.load_and_undersample_nifti(idx, t_sample)
         assert len(raw_shape) == 4, f"Img path: {self.im_paths[idx]}"
-
-        # Take only one time frame of the series
-        t = random.randint(0, raw_shape[-1] - 1)
-        frame_im_data = nii_img.dataobj[..., t]
-        frame_seg_data = nii_seg.dataobj[..., t].astype(np.uint8)
+        assert t is not None
+        t: int
         t = t / raw_shape[-1]
 
         # Crop the image into a square based on which side is the longest
-        cropped_im, cropped_seg = square_image(frame_im_data, frame_seg_data)
-        # Normalize image to range [0, 1]
-        img = normalize_image(cropped_im)
-        seg = cropped_seg
+        # frame_im_data, frame_seg_data = square_image(frame_im_data, frame_seg_data)
+        # Normalize image intensity to range [0, 1]
+        img = normalize_image(frame_im_data)
+        seg = frame_seg_data
 
         # img = cv2.resize(img, self.out_shape[:2])
         # seg = cv2.resize(seg, self.out_shape[:2], interpolation=cv2.INTER_NEAREST)
@@ -233,7 +253,7 @@ class Seg4DWholeImage(AbstractDataset):
                                      torch.arange(img.shape[1], dtype=torch.float32),
                                      torch.arange(img.shape[2], dtype=torch.float32))
         except IndexError as e:
-            print(f"img shape: {img.shape}, cropped shape: {cropped_im.shape}, frame_im_data: {frame_im_data.shape}")
+            print(f"Raw shape: {raw_shape}, cropped shape: {frame_im_data.shape}, img_shape: {img.shape}")
             print(f"Img path: {self.im_paths[idx]}")
             raise e
         x = x / img.shape[0]

@@ -33,7 +33,7 @@ class Params:
     dropout: float = 0.00
     num_hidden_layers: int = 8
     side_length: Tuple[int, ...] = (100, 100, -1, 1)
-    coord_noise_std: float = 1e-3
+    coord_noise_std: float = 1e-4
     heart_pad: int = 10
     max_epochs: int = 3001
     log_interval: int = 1
@@ -45,6 +45,8 @@ class Params:
     y_holdout_rate: int = 1  # Width
     z_holdout_rate: int = 1  # Slices
     t_holdout_rate: int = 1  # Time
+    rec_loss_weight: float = 1.0
+    seg_loss_weight: float = 1.0
     seg_class_weights: Tuple[float, ...] = (1.0, 1.0, 1.0, 1.0)
     lr: float = 1e-4
     fine_tune_lr: float = 1e-4

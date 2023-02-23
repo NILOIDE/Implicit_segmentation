@@ -1,5 +1,5 @@
 train_data_dir: D:\data
-num_train: 1500
+num_train: 1000
 val_data_dir: C:\Users\nilst\Documents\Implicit_segmentation\data\ukbb_val
 val_start_idx: 0
 num_val: 5
@@ -23,8 +23,8 @@ params:
     val_interval: 20
     fine_tune_max_epochs: 2001  # Lightning is faster doing (2000 epochs x 1 batch) than (1 epoch x 2000 batches)
     fine_tune_log_interval: 500
-    x_holdout_rate: 1  # Height
-    y_holdout_rate: 1  # Width
+    x_holdout_rate: 2  # Height
+    y_holdout_rate: 2  # Width
     z_holdout_rate: 1  # Slices
     t_holdout_rate: 1  # Time
     seg_class_weights: [1.0, 1.0, 1.0, 1.0]
