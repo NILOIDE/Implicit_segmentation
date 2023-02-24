@@ -10,12 +10,11 @@ class MLP(nn.Module):
         hidden_size = kwargs.get("hidden_size")
         input_coord_to_all_layers = kwargs.get("input_coord_to_all_layers")
         num_hidden_layers = kwargs.get("num_hidden_layers")
-        dropout = kwargs.get("dropout")
 
         hidden_input_size = hidden_size + (coord_size if input_coord_to_all_layers else 0)
-        a = [layer_class(coord_size + embed_size, hidden_size, dropout=dropout)]
+        a = [layer_class(coord_size + embed_size, hidden_size, **kwargs)]
         for i in range(num_hidden_layers - 1):
-            a.append(layer_class(hidden_input_size, hidden_size, dropout=dropout))
+            a.append(layer_class(hidden_input_size, hidden_size, **kwargs))
         self.hid_layers = nn.ModuleList(a)
         self.out_size = hidden_size
 
