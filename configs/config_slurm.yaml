@@ -10,12 +10,12 @@ num_test: 100
 log_dir: /home/guests/nil_stolt/results/cardiac_imp_seg
 
 params:
-    initial_val: True
+    initial_val: False
     pos_encoding: "none"  # nerf, none, gaussian
     side_length: [192, 192, -1, 1]
     max_epochs: 401
-    log_interval: 5
-    val_interval: 20
+    log_interval: 20
+    val_interval: 40
     fine_tune_max_epochs: 2001  # Lightning is faster doing (2000 epochs x 1 batch) than (1 epoch x 2000 batches)
     fine_tune_log_interval: 500
     x_holdout_rate: 2  # Height
