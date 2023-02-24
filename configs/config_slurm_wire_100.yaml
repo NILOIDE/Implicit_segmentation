@@ -13,7 +13,7 @@ params:
     initial_val: False
     pos_encoding: "none"  # nerf, none, gaussian
     side_length: [192, 192, -1, 1]
-    max_epochs: 401
+    max_epochs: 1201
     log_interval: 20
     val_interval: 40
     fine_tune_max_epochs: 2001  # Lightning is faster doing (2000 epochs x 1 batch) than (1 epoch x 2000 batches)
