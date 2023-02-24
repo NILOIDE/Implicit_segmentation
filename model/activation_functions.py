@@ -6,7 +6,7 @@ import numpy as np
 
 
 class Layer(nn.Module):
-    def __init__(self, in_size, out_size, dropout=0.0):
+    def __init__(self, in_size, out_size, dropout=0.0, **kwargs):
         super(Layer, self).__init__()
         self.dropout = None
         if dropout > 0.0:
