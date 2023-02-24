@@ -77,7 +77,7 @@ class Abstract(pl.LightningModule):
         self.lr = float(kwargs.get("lr"))
         self.max_epochs = int(kwargs.get("max_epochs"))
 
-        self.dataset = kwargs.get("dataset")
+        self.dataset: AbstractDataset = kwargs.get("dataset")
         self.num_train_samples = 1
         if self.dataset is not None:
             self.num_train_samples = len(self.dataset)
@@ -422,14 +422,14 @@ class AbstractLatent(Abstract):
                 logger.experiment.add_figure(f"{self.split_name}_loss_curve_sample_{i}", fig,
                                              global_step=self.train_epoch)
                 if self.num_coord_dims == 4 and self.dataset is not None:
-                    vid = self.draw_time_video(self.dataset.im_paths[i], self.dataset.seg_paths[i])
+                    vid = self.draw_time_video(i)
                     logger.experiment.add_video(f"{self.split_name}_end_video_sample_{i}", vid[None], fps=10,
                                                 global_step=self.train_epoch)
                     del vid
 
         else:
             if self.num_coord_dims == 4 and self.dataset is not None:
-                vid = self.draw_time_video(self.dataset.im_paths[0], self.dataset.seg_paths[0])
+                vid = self.draw_time_video(0)
                 logger.experiment.add_video(f"{self.split_name}_end_video", vid[None], fps=10,
                                             global_step=self.train_epoch)
                 del vid
@@ -468,13 +468,11 @@ class AbstractLatent(Abstract):
             self.history_dice_RV_Pool[self.current_epoch].append(dice_RV_Pool)
 
     def draw_image(self, sample_idx):
-        t = 0  # ED frame is t index 0
-        gt_im = nib.load(self.dataset.im_paths[sample_idx]).dataobj[..., t]
-        gt_seg = nib.load(self.dataset.seg_paths[sample_idx]).dataobj[..., t]
-        gt_im, gt_seg = square_image(gt_im, gt_seg)
+        t = 0.0  # ED frame is t index 0
+        gt_im, gt_seg, raw_shape, t = self.dataset.load_and_undersample_nifti(sample_idx, t)
         gt_im = normalize_image(gt_im)
-        gt_im = cv2.resize(gt_im, self.side_length[:2])
-        gt_seg = cv2.resize(gt_seg, self.side_length[:2], interpolation=cv2.INTER_NEAREST)
+        # gt_im = cv2.resize(gt_im, self.side_length[:2])
+        # gt_seg = cv2.resize(gt_seg, self.side_length[:2], interpolation=cv2.INTER_NEAREST)
 
         gt_2D_ims = [gt_im[..., i] for i in range(gt_im.shape[-1])]
         gt_2D_segs = [gt_seg[..., i] for i in range(gt_seg.shape[-1])]
@@ -482,8 +480,6 @@ class AbstractLatent(Abstract):
         gt_seg_row = []
         for i, (og_im, og_seg) in enumerate(zip(gt_2D_ims, gt_2D_segs)):
             og_im_rgb = np.stack((og_im, og_im, og_im), axis=-1)
-            if i % self.z_holdout_rate == 0:
-                og_im_rgb[[0]*og_im_rgb.shape[1], list(range(og_im_rgb.shape[1]))] = np.array((0, 1, 0))
             gt_im_row.append(og_im_rgb)
             gt_im_row.append(np.zeros_like(og_im_rgb))
             masked_im = draw_mask_to_image(og_im, og_seg)
@@ -531,45 +527,24 @@ class AbstractLatent(Abstract):
         ax[2].legend(loc="upper right")
         return fig
 
-    def draw_time_video(self, gt_im_path, gt_seg_path, z_values=(0.1, 0.3, 0.5, 0.7, 0.9)) -> torch.Tensor:
-        nii_img = nib.load(gt_im_path)
-        nii_seg = nib.load(gt_seg_path)
-        raw_shape = nii_img.shape
+    def draw_time_video(self, im_idx, z_values=(0.1, 0.3, 0.5, 0.7, 0.9)) -> torch.Tensor:
+        gt_im_vol, gt_seg_vol, raw_shape, t = self.dataset.load_and_undersample_nifti(im_idx)
         z_indices = [int(raw_shape[-2] * z_prop) for z_prop in z_values]
 
-        # Take only one time frame of the series
-        gt_im_vol = nii_img.dataobj[:]
-        gt_seg_vol = nii_seg.dataobj[:].astype(np.uint8)
-        # Crop the image into a square based on which side is the longest
-        max_dim = np.argmax(gt_im_vol.shape)
-        if max_dim == 0:
-            start_idx = (gt_im_vol.shape[0] - gt_im_vol.shape[1]) // 2
-            gt_im_vol = gt_im_vol[start_idx: start_idx + gt_im_vol.shape[1]]
-            gt_seg_vol = gt_seg_vol[start_idx: start_idx + gt_seg_vol.shape[1]]
-        elif max_dim == 1:
-            start_idx = (gt_im_vol.shape[1] - gt_im_vol.shape[0]) // 2
-            gt_im_vol = gt_im_vol[:, start_idx: start_idx + gt_im_vol.shape[0]]
-            gt_seg_vol = gt_seg_vol[:, start_idx: start_idx + gt_seg_vol.shape[0]]
-        else:
-            raise ValueError
-        assert gt_im_vol.shape[0] == gt_im_vol.shape[1]
-        min_, max_ = gt_im_vol.min(), gt_im_vol.max()
-        gt_im_vol = (gt_im_vol - min_) / (max_ - min_)
         frames = []
         for t in tqdm(range(0, gt_im_vol.shape[-1]), desc="Generating video"):
             rows = []
             for z_idx in z_indices:
                 gt_im = gt_im_vol[:, :, z_idx, t]
                 gt_seg = gt_seg_vol[:, :, z_idx, t]
-                gt_im = cv2.resize(gt_im, self.side_length[:2])
-                gt_seg = cv2.resize(gt_seg, self.side_length[:2], interpolation=cv2.INTER_NEAREST)
+                gt_im = normalize_image(gt_im)
 
                 gt_im = np.stack([gt_im]*3, axis=-1)
                 gt_seg = draw_mask_to_image(gt_im, gt_seg)
 
                 z_coord = z_idx/raw_shape[-2]
                 t_coord = t/raw_shape[-1]
-                pred_im, pred_seg = self.evaluate_2D_from_constant(gt_im.shape[:2], dim3_value=z_coord, time_value=t_coord)
+                pred_im, pred_seg = self.evaluate_2D_from_constant(gt_im.shape[:2], dim3_value=z_coord, time_value=t_coord, im_idx=im_idx)
                 pred_im = np.stack([pred_im]*3, axis=-1)
                 pred_seg = np.argmax(pred_seg, axis=0)
                 pred_seg = draw_mask_to_image(pred_im, pred_seg)
@@ -609,6 +584,7 @@ class AbstractLatent(Abstract):
                                   dim2_value: float = None,
                                   dim3_value: float = None,
                                   time_value: float = None,
+                                  im_idx: int = 0,
                                   ) -> np.array:
         # Create meshgrid (coordinates same for every dimension)
         assert len(out_shape) == 2
@@ -647,7 +623,7 @@ class AbstractLatent(Abstract):
         else:
             raise ValueError("There should be at least 3 dims")
         coord_arr = torch.stack(dims, dim=-1)
-        return self.evaluate(coord_arr, self.h[0])
+        return self.evaluate(coord_arr, self.h[im_idx])
 
 
 class ImplicitNetSegPrior(AbstractPrior):
