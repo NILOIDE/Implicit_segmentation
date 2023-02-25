@@ -26,4 +26,4 @@ params:
     weight_reg: 1e-4
     activation: "wire"  # periodic, relu, wire
     wire_omega_0: 10.0
-    wire_scale_0: 100.0
+    wire_scale_0: 1.0
