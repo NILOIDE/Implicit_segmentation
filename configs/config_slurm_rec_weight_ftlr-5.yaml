@@ -21,9 +21,9 @@ params:
     y_holdout_rate: 1  # Width
     z_holdout_rate: 1  # Slices
     t_holdout_rate: 1  # Time
-    rec_loss_weight: 100.0
+    rec_loss_weight: 10.0
     lr: 1e-4
-    fine_tune_lr: 1e-4
+    fine_tune_lr: 1e-5
     latent_reg: 1e-4
     weight_reg: 1e-4
     activation: "wire"  # periodic, relu, wire

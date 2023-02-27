@@ -3,7 +3,7 @@ train_start_idx: 0
 num_train: 1000
 val_data_dir: /home/guests/projects/ukbb/cardiac/cardiac_segmentations/subjects
 val_start_idx: 1500
-num_val: 5
+num_val: 10
 test_data_dir: /home/guests/projects/ukbb/cardiac/cardiac_segmentations/subjects
 test_start_idx: 1600
 num_test: 100
@@ -11,6 +11,7 @@ log_dir: /home/guests/nil_stolt/results/cardiac_imp_seg
 
 params:
     initial_val: True
+    pos_encoding: "none"  # nerf, none, gaussian
     side_length: [192, 192, -1, 1]
     max_epochs: 1201
     log_interval: 20
@@ -21,9 +22,10 @@ params:
     y_holdout_rate: 1  # Width
     z_holdout_rate: 1  # Slices
     t_holdout_rate: 1  # Time
-    rec_loss_weight: 100.0
+    rec_loss_weight: 10.0
     lr: 1e-4
-    fine_tune_lr: 1e-4
+    fine_tune_lr: 1e-5
     latent_reg: 1e-4
     weight_reg: 1e-4
     activation: "wire"  # periodic, relu, wire
+    input_coord_to_all_layers: True
