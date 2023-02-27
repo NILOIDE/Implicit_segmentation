@@ -486,7 +486,7 @@ class AbstractLatent(Abstract):
             gt_seg_row.append(masked_im)
             gt_seg_row.append(np.zeros_like(masked_im))
 
-        pred_im, pred_seg = self.evaluate_volume((*gt_im.shape[:2], gt_im.shape[2] * 2))
+        pred_im, pred_seg = self.evaluate_volume((*gt_im.shape[:2], gt_im.shape[2] * 2), sample_idx)
         pred_im_row = [np.stack([pred_im[..., i]]*3, axis=-1) for i in range(pred_im.shape[-1])]
         pred_seg_row = [draw_mask_to_image(pred_im[..., i],
                                            np.argmax(pred_seg[..., i], axis=0)) for i in range(pred_im.shape[-1])]
@@ -544,7 +544,8 @@ class AbstractLatent(Abstract):
 
                 z_coord = z_idx/raw_shape[-2]
                 t_coord = t/raw_shape[-1]
-                pred_im, pred_seg = self.evaluate_2D_from_constant(gt_im.shape[:2], dim3_value=z_coord, time_value=t_coord, im_idx=im_idx)
+                pred_im, pred_seg = self.evaluate_2D_from_constant(gt_im.shape[:2], im_idx,
+                                                                   dim3_value=z_coord, time_value=t_coord)
                 pred_im = np.stack([pred_im]*3, axis=-1)
                 pred_seg = np.argmax(pred_seg, axis=0)
                 pred_seg = draw_mask_to_image(pred_im, pred_seg)
@@ -565,7 +566,7 @@ class AbstractLatent(Abstract):
             pred_im, pred_seg = pred_im.cpu().numpy(), pred_seg.cpu().numpy()
         return pred_im[0], pred_seg[0]
 
-    def evaluate_volume(self, out_shape: Tuple[int, ...], t=0.0):
+    def evaluate_volume(self, out_shape: Tuple[int, ...], im_idx: int, t: float = 0.0):
         """ NOTE: torch.meshgrid has a different behaviour than np.meshgrid,
         using both interchangeably will produce transposed images. """
         coords = torch.meshgrid(torch.arange(out_shape[0], dtype=torch.float32),
@@ -576,15 +577,15 @@ class AbstractLatent(Abstract):
             t = torch.full_like(coords[0], t)
             coords.append(t)
         coord_arr = torch.stack(coords, dim=-1)
-        return self.evaluate(coord_arr, self.h[0])
+        return self.evaluate(coord_arr, self.h[im_idx])
 
     def evaluate_2D_from_constant(self,
                                   out_shape: Tuple[int, ...],
+                                  im_idx: int,
                                   dim1_value: float = None,
                                   dim2_value: float = None,
                                   dim3_value: float = None,
                                   time_value: float = None,
-                                  im_idx: int = 0,
                                   ) -> np.array:
         # Create meshgrid (coordinates same for every dimension)
         assert len(out_shape) == 2
