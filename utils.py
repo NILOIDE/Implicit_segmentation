@@ -63,6 +63,7 @@ def draw_mask_to_image(image: np.ndarray, mask: np.ndarray) -> np.ndarray:
 
 
 def to_1hot(class_indices: torch.Tensor, num_class=4) -> torch.FloatTensor:
+    """ Assumes batch dimension is present! """
     seg = class_indices.to(torch.long).reshape((-1))
     seg_1hot = torch.zeros((*seg.shape, num_class), dtype=torch.float32, device=class_indices.device)
     seg_1hot[torch.arange(0, seg.shape[0], dtype=torch.long), seg] = 1
@@ -102,7 +103,7 @@ def find_sax_ED_images(load_dir: Union[str, Path], num_cases: int = -1, get_bbox
     return ims, segs, bboxes if get_bbox else None
 
 
-def find_sax_images(load_dir: Union[str, Path], num_cases: int = -1, get_bbox: bool = False, **kwargs):
+def find_sax_images(load_dir: Union[str, Path], num_cases: int = -1, case_start_idx: int = 0, get_bbox: bool = False, **kwargs):
     ims = []
     segs = []
     bboxes = []
@@ -110,7 +111,11 @@ def find_sax_images(load_dir: Union[str, Path], num_cases: int = -1, get_bbox: b
     img_file = "sa.nii.gz"
     seg_file = "seg_sa.nii.gz"
     start_time = time.time()
-    for parent, subdir, files in os.walk(str(load_dir)):
+    spcs = []
+    shapes = []
+    for i, (parent, subdir, files) in enumerate(os.walk(str(load_dir))):
+        if i < case_start_idx:
+            continue
         if num_cases > 0 and count >= num_cases:
             break
         im_path = Path(parent) / img_file
@@ -119,6 +124,9 @@ def find_sax_images(load_dir: Union[str, Path], num_cases: int = -1, get_bbox: b
             continue
         if not os.path.exists(seg_path):
             continue
+        im = nib.load(im_path)
+        shapes.append(im.shape)
+        spcs.append(im.header.get_zooms())
         ims.append(im_path)
         segs.append(seg_path)
         if get_bbox:

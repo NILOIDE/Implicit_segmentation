@@ -411,6 +411,11 @@ class AbstractLatent(Abstract):
 
         if self.split_name == "test":
             for i in range(len(self.history_dice_BG[0])):
+                final_dice_scores = self.calculate_volume_dice(i)
+                logger.experiment.add_scalar("Final_dice", np.mean(final_dice_scores))
+                logger.experiment.add_scalar("Final_dice_LV_Pool", final_dice_scores[0])
+                logger.experiment.add_scalar("Final_dice_LV_Myo", final_dice_scores[1])
+                logger.experiment.add_scalar("Final_dice_RV_Pool", final_dice_scores[2])
                 fig = self.draw_fit_plot(
                     pixel_loss=[self.history_pixel_loss[t][i] for t in range(len(self.history_pixel_loss))],
                     dice_BG=[self.history_dice_BG[t][i] for t in range(len(self.history_dice_BG))],
@@ -555,6 +560,24 @@ class AbstractLatent(Abstract):
         frames = torch.from_numpy(frames).moveaxis(-1, 1)
         return frames
 
+    def calculate_volume_dice(self, im_idx) -> List[float]:
+        gt_im_vol, gt_seg_vol, raw_shape, t = self.dataset.load_and_undersample_nifti(im_idx)
+        dices = []
+        for t in tqdm(range(0, gt_im_vol.shape[-1]), desc=f"Calculating dice of subject {im_idx}"):
+            gt_im = gt_im_vol[:, :, :, t]
+            gt_seg = gt_seg_vol[:, :, :, t]
+            gt_im = normalize_image(gt_im)
+            t_coord = t / raw_shape[-1]
+            pred_im, pred_seg = self.evaluate_volume(gt_im.shape[:3], im_idx, t_coord, as_numpy=False)
+
+            gt_seg_1hot = to_1hot(torch.from_numpy(gt_seg[None]))[0]
+            non_class_dims = tuple(range(1, len(pred_seg.shape)))
+            dice = 1 - self.dice_loss(pred_seg.round(), gt_seg_1hot).mean(non_class_dims)
+            dices.append(dice[1:].tolist())
+        avg_score = list(np.mean(np.array(dices), axis=0))
+        assert len(avg_score) == 3
+        return avg_score
+
     @torch.no_grad()
     def evaluate(self, coord_arr: torch.Tensor, h_vector: torch.Tensor, as_numpy: bool = True) \
             -> Union[Tuple[np.ndarray, np.ndarray], Tuple[torch.Tensor, torch.Tensor]]:
@@ -566,7 +589,7 @@ class AbstractLatent(Abstract):
             pred_im, pred_seg = pred_im.cpu().numpy(), pred_seg.cpu().numpy()
         return pred_im[0], pred_seg[0]
 
-    def evaluate_volume(self, out_shape: Tuple[int, ...], im_idx: int, t: float = 0.0):
+    def evaluate_volume(self, out_shape: Tuple[int, int, int], im_idx: int, t: float = 0.0, as_numpy: bool = True):
         """ NOTE: torch.meshgrid has a different behaviour than np.meshgrid,
         using both interchangeably will produce transposed images. """
         coords = torch.meshgrid(torch.arange(out_shape[0], dtype=torch.float32),
@@ -577,7 +600,7 @@ class AbstractLatent(Abstract):
             t = torch.full_like(coords[0], t)
             coords.append(t)
         coord_arr = torch.stack(coords, dim=-1)
-        return self.evaluate(coord_arr, self.h[im_idx])
+        return self.evaluate(coord_arr, self.h[im_idx], as_numpy)
 
     def evaluate_2D_from_constant(self,
                                   out_shape: Tuple[int, ...],

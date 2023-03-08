@@ -12,19 +12,13 @@ from data_loading.augmentations import TranslateCoords, RotateCoords, GammaShift
 
 
 class AbstractDataset(Dataset):
-    def __init__(self, load_dir, num_cases, case_start_idx=0,
-                 side_length=(128, 128, -1), augmentations=(), **kwargs):
+    def __init__(self, load_dir, side_length=(128, 128, -1), augmentations=(), **kwargs):
         self.coord_noise_std = kwargs.get("coord_noise_std", 0.0)
         assert self.coord_noise_std >= 0.0
         self.load_dir = load_dir
         self.im_paths, self.seg_paths, self.bboxes = self.find_images(**kwargs)
+        num_cases = kwargs["num_cases"]
         assert num_cases > 0
-        if self.im_paths is not None:
-            self.im_paths = self.im_paths[case_start_idx:case_start_idx+num_cases]
-        if self.seg_paths is not None:
-            self.seg_paths = self.seg_paths[case_start_idx:case_start_idx+num_cases]
-        if self.bboxes is not None:
-            self.bboxes = self.bboxes[case_start_idx:case_start_idx+num_cases]
         self.x_ho_rate = kwargs.get("x_holdout_rate", 1)
         self.y_ho_rate = kwargs.get("y_holdout_rate", 1)
         self.z_ho_rate = kwargs.get("z_holdout_rate", 1)

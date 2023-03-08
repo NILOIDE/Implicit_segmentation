@@ -63,22 +63,6 @@ class Params:
     #                                                          {"gamma", {"gamma_lim": (0.7, 1.4)}})
 
 
-@dataclass
-class EvalParams:
-    side_length: Tuple[int, int, Optional[int]] = (100, 100, -1, 1)
-    heart_pad: int = 10
-    fine_tune_max_epochs: int = 3001  # Lightning is faster doing (2000 epochs x 1 batch) than (1 epoch x 2000 batches)
-    fine_tune_log_interval: int = 500
-    x_holdout_rate: int = 1  # Height
-    y_holdout_rate: int = 1  # Width
-    z_holdout_rate: int = 1  # Slices
-    t_holdout_rate: int = 1  # Time
-    fine_tune_lr: float = 1e-4
-    latent_reg: float = 1e-4
-    weight_reg: float = 1e-4
-    augmentations: Tuple[Tuple[str, Dict[str, Any]], ...] = ()
-
-
 def init_model(dataset, val_dataset, **params):
     if params["model_type"] == "separate":
         model = ImplicitNetSeparateSegPrior(
