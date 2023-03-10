@@ -485,6 +485,8 @@ class AbstractLatent(Abstract):
         gt_seg_row = []
         for i, (og_im, og_seg) in enumerate(zip(gt_2D_ims, gt_2D_segs)):
             og_im_rgb = np.stack((og_im, og_im, og_im), axis=-1)
+            if i % self.z_holdout_rate == 0:
+                og_im_rgb[[0]*og_im_rgb.shape[1], list(range(og_im_rgb.shape[1]))] = np.array((0, 1, 0))
             gt_im_row.append(og_im_rgb)
             gt_im_row.append(np.zeros_like(og_im_rgb))
             masked_im = draw_mask_to_image(og_im, og_seg)
