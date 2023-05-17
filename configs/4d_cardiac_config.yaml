@@ -20,9 +20,9 @@ params:
     side_length: [100, 100, -1, 1]
     max_epochs: 201
     log_interval: 1
-    val_interval: 20
-    fine_tune_max_epochs: 2001  # Lightning is faster doing (2000 epochs x 1 batch) than (1 epoch x 2000 batches)
-    fine_tune_log_interval: 500
+    val_interval: 10
+    fine_tune_max_epochs: 20  # Lightning is faster doing (2000 epochs x 1 batch) than (1 epoch x 2000 batches)
+    fine_tune_log_interval: 10
     x_holdout_rate: 2  # Height
     y_holdout_rate: 2  # Width
     z_holdout_rate: 1  # Slices
@@ -33,6 +33,7 @@ params:
     latent_reg: 1e-4
     weight_reg: 1e-4
     activation: "wire"  # periodic, relu, wire
+    wire_omega_0: 100.0
     skip_connections: True
     input_coord_to_all_layers: False
     model_type: "shared"  # shared, separate, mounted

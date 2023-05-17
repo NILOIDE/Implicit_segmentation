@@ -1,5 +1,0 @@
-# pip3 install -r torch_requirements.txt  -f https://download.pytorch.org/whl/torch_stable.html
-torchvision==0.12.0+cu113
-torch==1.11.0+cu113
-torchsummary==1.5.1
-pytorch-lightning==1.8.4
