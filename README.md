@@ -1,4 +1,4 @@
-# Neural Implicit Segmentation Functions
+# NISF: Neural Implicit Segmentation Functions
 
 This is the official repository for the MICCAI 2023 paper submission: "NISF: Neural Implicit Segmentation Functions"
 
@@ -19,9 +19,10 @@ This is the official repository for the MICCAI 2023 paper submission: "NISF: Neu
 Please cite this work if any of our code or ideas are helpful for your research.
 
 ```
-@article{mcginnis2023multi,
-  title={Multi-contrast MRI Super-resolution via Implicit Neural Representations},
-  author={McGinnis, Julian and Shit, Suprosanna and Li, Hongwei Bran and Sideri-Lampretsa, Vasiliki and Graf, Robert and Dannecker, Maik and Pan, Jiazhen and Ans{\'o}, Nil Stolt and M{\"u}hlau, Mark and Kirschke, Jan S and others},
+@article{stolt-anso2023multi,
+  title={NISF: Neural Implicit Segmentation Functions},
+  author={Ans{\'o}, Nil Stolt and McGinnis, Julian and Pan, Jiazhen and Hammernik, Kerstin and Rueckert, Daniel
+},
   journal={arXiv preprint arXiv:2303.15065},
   year={2023}
 }
