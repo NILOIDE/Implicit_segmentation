@@ -23,11 +23,12 @@ This is the official repository for the MICCAI 2023 paper submission: "NISF: Neu
 Please cite this work if any of our code or ideas are helpful for your research.
 
 ```
-@article{stolt-anso2023multi,
+@inproceedings{stolt2023nisf,
   title={NISF: Neural Implicit Segmentation Functions},
-  author={Ans{\'o}, Nil Stolt and McGinnis, Julian and Pan, Jiazhen and Hammernik, Kerstin and Rueckert, Daniel
-},
-  journal={arXiv preprint arXiv:2303.15065},
-  year={2023}
+  author={Stolt-Ans{\'o}, Nil and McGinnis, Julian and Pan, Jiazhen and Hammernik, Kerstin and Rueckert, Daniel},
+  booktitle={International Conference on Medical Image Computing and Computer-Assisted Intervention},
+  pages={734--744},
+  year={2023},
+  organization={Springer}
 }
 ```
